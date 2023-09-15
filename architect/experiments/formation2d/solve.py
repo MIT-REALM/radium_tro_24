@@ -243,7 +243,7 @@ if __name__ == "__main__":
     if reinforce:
         init_sampler_fn = init_reinforce_sampler
         noise_scale = 0.1
-        make_kernel_fn = lambda logprob_fn, step_size, _: make_reinforce_kernel(
+        make_kernel_fn = lambda _, logprob_fn, step_size, _: make_reinforce_kernel(
             logprob_fn,
             step_size,
             perturbation_stddev=noise_scale,
@@ -257,14 +257,16 @@ if __name__ == "__main__":
             logprob_fn,
             True,  # TODO don't normalize gradients
         )
-        make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-            logprob_fn,
-            step_size,
-            use_gradients,
-            stochasticity,
-            grad_clip,
-            True,  # TODO don't normalize gradients
-            True,  # use metroplis-hastings
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                True,  # TODO don't normalize gradients
+                True,  # use metroplis-hastings
+            )
         )
 
     # Run the prediction+mitigation process

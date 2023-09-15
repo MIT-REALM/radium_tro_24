@@ -94,7 +94,7 @@ def predict_and_mitigate_failure_modes(
     ep_potential_fn: Callable[[Params, Params], Float[Array, ""]],
     dp_potential_fn: Callable[[Params, Params], Float[Array, ""]],
     init_sampler: Callable[[Params, LogLikelihood], PyTree],
-    make_kernel: Callable[[LogLikelihood, float, bool], Sampler],
+    make_kernel: Callable[[Params, LogLikelihood, float, bool], Sampler],
     num_rounds: int,
     num_mcmc_steps_per_round: int,
     dp_mcmc_step_size: float,
@@ -138,9 +138,9 @@ def predict_and_mitigate_failure_modes(
         init_sampler: function taking a single set of design parameters and a log
             likelihood function, returning the initial state for a sampler/optimization
             algorithm.
-        make_kernel: function taking a log likelihood function, a step size, and a
-            boolean flag indicating whether or not to disable stochasticity, returning a
-            sampler (or optimizer) to use.
+        make_kernel: function taking parameters, a log likelihood function, a step size,
+             and a boolean flag indicating whether or not to disable stochasticity,
+            returning a sampler (or optimizer) to use.
         num_rounds: how many steps to take for the top-level predict-repair algorithm
         num_mcmc_steps_per_round: the number of steps to run for each set of MCMC chains
             within each round
@@ -223,7 +223,10 @@ def predict_and_mitigate_failure_modes(
             )
 
             # Make the sampling kernel
-            dp_kernel = make_kernel(dp_logprob_fn, dp_mcmc_step_size, dp_stochasticity)
+            example_dp = jtu.tree_map(lambda leaf: leaf[0], current_dps)
+            dp_kernel = make_kernel(
+                example_dp, dp_logprob_fn, dp_mcmc_step_size, dp_stochasticity
+            )
 
             # Run the chains and update the design parameters
             n_chains = initial_dp_sampler_states.logdensity.shape[0]
@@ -268,7 +271,10 @@ def predict_and_mitigate_failure_modes(
             )
 
             # Make the sampling kernel
-            ep_kernel = make_kernel(ep_logprob_fn, ep_mcmc_step_size, ep_stochasticity)
+            example_ep = jtu.tree_map(lambda leaf: leaf[0], current_eps)
+            ep_kernel = make_kernel(
+                example_ep, ep_logprob_fn, ep_mcmc_step_size, ep_stochasticity
+            )
 
             # Run the chains and update the design parameters
             n_chains = initial_ep_sampler_states.logdensity.shape[0]

@@ -141,7 +141,7 @@ if __name__ == "__main__":
         normalize_gradients,
         gradient_clip=grad_clip,
     )
-    make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+    make_kernel_fn = lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
         logprob_fn,
         step_size,
         use_gradients,

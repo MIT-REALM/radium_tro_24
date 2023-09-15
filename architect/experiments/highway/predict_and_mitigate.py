@@ -19,6 +19,7 @@ from beartype.typing import NamedTuple
 from jaxtyping import Array, Float, Shaped
 
 from architect.engines import predict_and_mitigate_failure_modes
+from architect.engines.blackjax import make_hmc_step_and_initial_state
 from architect.engines.reinforce import init_sampler as init_reinforce_sampler
 from architect.engines.reinforce import make_kernel as make_reinforce_kernel
 from architect.engines.samplers import init_sampler as init_mcmc_sampler
@@ -324,7 +325,7 @@ if __name__ == "__main__":
     parser.add_argument("--savename", type=str, default="highway")
     parser.add_argument("--image_w", type=int, nargs="?", default=32)
     parser.add_argument("--image_h", type=int, nargs="?", default=32)
-    parser.add_argument("--noise_scale", type=float, nargs="?", default=0.5)
+    parser.add_argument("--noise_scale", type=float, nargs="?", default=0.1)
     parser.add_argument("--failure_level", type=int, nargs="?", default=7.4)
     parser.add_argument("--T", type=int, nargs="?", default=60)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
@@ -344,6 +345,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=1_000)
     boolean_action = argparse.BooleanOptionalAction
     parser.add_argument("--repair", action=boolean_action, default=False)
+    parser.add_argument("--hmc", action=boolean_action, default=False)
+    parser.add_argument("--num_hmc_integration_steps", type=int, nargs="?", default=10)
     parser.add_argument("--predict", action=boolean_action, default=True)
     parser.add_argument("--temper", action=boolean_action, default=True)
     parser.add_argument("--grad_clip", type=float, nargs="?", default=float("inf"))
@@ -366,6 +369,8 @@ if __name__ == "__main__":
     use_stochasticity = not args.disable_stochasticity
     use_mh = not args.disable_mh
     reinforce = args.reinforce
+    hmc = args.hmc
+    num_hmc_integration_steps = args.num_hmc_integration_steps
     zero_order_gradients = args.zero_order_gradients
     num_stress_test_cases = args.num_stress_test_cases
     repair = args.repair
@@ -378,6 +383,8 @@ if __name__ == "__main__":
     quench_dps_only = False
     if reinforce:
         alg_type = f"reinforce_l2c_0.05_step_lr_{ep_mcmc_step_size:.1e}"
+    elif hmc:
+        alg_type = f"hmc_steps_{num_hmc_integration_steps}_lr_{ep_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
     elif use_gradients and use_stochasticity and use_mh and not zero_order_gradients:
         alg_type = f"mala_lr_{ep_mcmc_step_size:.1e}"
         quench_dps_only = True
@@ -401,7 +408,7 @@ if __name__ == "__main__":
             args.savename
             + ("-predict" if predict else "")
             + ("-repair" if repair else "")
-            + f"-{num_rounds}x{num_steps_per_round}"
+            + f"-noise_{noise_scale:.2}"
         ),
         group=alg_type,
         config={
@@ -420,6 +427,8 @@ if __name__ == "__main__":
             "use_stochasticity": use_stochasticity,
             "use_mh": use_mh,
             "reinforce": reinforce,
+            "hmc": hmc,
+            "num_hmc_integration_steps": num_hmc_integration_steps,
             "zero_order_gradients": zero_order_gradients,
             "repair": repair,
             "predict": predict,
@@ -496,11 +505,27 @@ if __name__ == "__main__":
     # Choose which sampler to use
     if reinforce:
         init_sampler_fn = init_reinforce_sampler
-        make_kernel_fn = lambda logprob_fn, step_size, _: make_reinforce_kernel(
+        make_kernel_fn = lambda _1, logprob_fn, step_size, _2: make_reinforce_kernel(
             logprob_fn,
             step_size,
             perturbation_stddev=noise_scale,
             baseline_update_rate=0.5,
+        )
+    elif hmc:
+        init_sampler_fn = lambda params, logprob_fn: make_hmc_step_and_initial_state(
+            logprob_fn,
+            params,
+            step_size=ep_mcmc_step_size,  # dummy
+            num_integration_steps=num_hmc_integration_steps,
+        )[1]
+
+        make_kernel_fn = (
+            lambda params, logprob_fn, step_size, _: make_hmc_step_and_initial_state(
+                logprob_fn,
+                params,
+                step_size=step_size,
+                num_integration_steps=num_hmc_integration_steps,
+            )[0]
         )
     else:
         # This sampler yields either MALA, GD, or RMH depending on whether gradients
@@ -512,15 +537,17 @@ if __name__ == "__main__":
             gradient_clip=grad_clip,
             estimate_gradients=zero_order_gradients,
         )
-        make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-            logprob_fn,
-            step_size,
-            use_gradients,
-            stochasticity,
-            grad_clip,
-            normalize_gradients,
-            use_mh,
-            zero_order_gradients,
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                normalize_gradients,
+                use_mh,
+                zero_order_gradients,
+            )
         )
 
     # Run the prediction+mitigation process

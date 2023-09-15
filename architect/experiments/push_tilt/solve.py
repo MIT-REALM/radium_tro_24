@@ -204,7 +204,7 @@ if __name__ == "__main__":
     # Choose which sampler to use
     if reinforce:
         init_sampler_fn = init_reinforce_sampler
-        make_kernel_fn = lambda logprob_fn, step_size, _: make_reinforce_kernel(
+        make_kernel_fn = lambda _, logprob_fn, step_size, _: make_reinforce_kernel(
             logprob_fn,
             step_size,
             perturbation_stddev=0.05,
@@ -220,15 +220,17 @@ if __name__ == "__main__":
             gradient_clip=grad_clip,
             estimate_gradients=zero_order_gradients,
         )
-        make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-            logprob_fn,
-            step_size,
-            use_gradients,
-            stochasticity,
-            grad_clip,
-            normalize_gradients,
-            use_mh,
-            zero_order_gradients,
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                normalize_gradients,
+                use_mh,
+                zero_order_gradients,
+            )
         )
 
     # Run the prediction+mitigation process
