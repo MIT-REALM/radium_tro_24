@@ -64,10 +64,13 @@ def make_hmc_step_and_initial_state(
     initial_hmc_state = sampler.init(position)
 
     # Wrap the state in our own state struct
+    logdensity_grad = jax.tree_util.tree_map(
+        lambda x: -x, initial_hmc_state.potential_energy_grad
+    )
     initial_state = BlackJaxState(
         position=position,
         logdensity=-initial_hmc_state.potential_energy,  # negate to get logdensity
-        logdensity_grad=-initial_hmc_state.potential_energy_grad,
+        logdensity_grad=logdensity_grad,
         num_accepts=0,
         blackjax_state=initial_hmc_state,
     )
@@ -98,10 +101,13 @@ def make_hmc_step_and_initial_state(
             state.num_accepts + num_integration_steps * hmc_info.acceptance_probability
         )
 
+        logdensity_grad = jax.tree_util.tree_map(
+            lambda x: -x, next_hmc_state.potential_energy_grad
+        )
         return BlackJaxState(
             position=next_hmc_state.position,
             logdensity=-next_hmc_state.potential_energy,
-            logdensity_grad=-next_hmc_state.potential_energy_grad,
+            logdensity_grad=logdensity_grad,
             num_accepts=new_num_accepts,
             blackjax_state=next_hmc_state,
         )

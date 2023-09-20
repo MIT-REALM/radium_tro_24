@@ -68,7 +68,7 @@ class MultiAgentTrajectory(NamedTuple):
 
     @jaxtyped
     def __call__(self, t: Float[Array, ""]) -> Float[Array, "N 2"]:
-        """Return the waypoints for each agent at a given time (linearly interpolate)"""
+        """Return the waypoints for each agent at a given time (Bezier interpolate)"""
         return jnp.array([traj(t) for traj in self.trajectories])
 
 

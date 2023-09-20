@@ -123,6 +123,12 @@ def init_sampler(
         gradient_clip: maximum value to clip gradients
         estimate_gradients: if True, estimate gradients using a weight perturbation
     """
+    # Generate noise with the same shape as the position pytree, so we can set the
+    # gradient clipping threshold appropriately
+    p, _ = jax.flatten_util.ravel_pytree(position)
+    sample = jrandom.normal(jrandom.PRNGKey(0), shape=p.shape, dtype=p.dtype)
+    noise_strength = jnp.linalg.norm(sample)
+
     grad_fn = jax.value_and_grad(logdensity_fn)
 
     if estimate_gradients:
@@ -140,7 +146,9 @@ def init_sampler(
     # Normalize the gradients if requested
     logdensity_grad = jax.lax.cond(
         normalize_gradients,
-        lambda: normalize_gradients_with_threshold(logdensity_grad, gradient_clip),
+        lambda: normalize_gradients_with_threshold(
+            logdensity_grad, noise_strength * gradient_clip
+        ),
         lambda: logdensity_grad,
     )
 
@@ -247,6 +255,7 @@ def make_kernel(
         # Generate noise with the same shape as the position pytree
         p, unravel_fn = jax.flatten_util.ravel_pytree(state.position)
         sample = jrandom.normal(proposal_key, shape=p.shape, dtype=p.dtype)
+        noise_strength = jnp.linalg.norm(sample)
         noise = unravel_fn(sample)
 
         # Add it to the change in state if using stochasticity
@@ -281,7 +290,9 @@ def make_kernel(
         # Normalize the gradients if requested.
         new_grad = jax.lax.cond(
             normalize_gradients,
-            lambda: normalize_gradients_with_threshold(new_grad, gradient_clip),
+            lambda: normalize_gradients_with_threshold(
+                new_grad, noise_strength * gradient_clip
+            ),
             lambda: new_grad,
         )
 

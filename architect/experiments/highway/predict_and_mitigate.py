@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy
 import wandb
-from beartype.typing import NamedTuple
+from beartype.typing import List, NamedTuple
 from jaxtyping import Array, Float, Shaped
 
 from architect.engines import predict_and_mitigate_failure_modes
@@ -79,56 +79,116 @@ K, _, _ = dlqr(A, B, Q, R)
 K = jnp.array(K)
 
 
-def sample_non_ego_actions(
-    key: PRNGKeyArray,
-    env: HighwayEnv,
-    horizon: int,
-    n_non_ego: int,
-    noise_scale: float = 0.05,
-) -> NonEgoActions:
-    """Sample actions for the non-ego vehicles.
+class LinearTrajectory2D(NamedTuple):
+    """
+    The trajectory for a single robot, represented by linear interpolation.
 
-    These are residual applied on top of a proportional feedback controller.
+    Time is normalized to [0, 1]
+
+    args:
+        p: the array of control points for the trajectory
+    """
+
+    p: Float[Array, "T 2"]
+
+    def __call__(self, t: Float[Array, ""]) -> Float[Array, "2"]:
+        """Return the point along the trajectory at the given time"""
+        # Interpolate each axis separately
+        return jnp.array(
+            [
+                jnp.interp(
+                    t,
+                    jnp.linspace(0, 1, self.p.shape[0]),
+                    self.p[:, i],
+                )
+                for i in range(2)
+            ]
+        )
+
+
+# @jaxtyped
+# @beartype
+class MultiAgentTrajectoryLinear(NamedTuple):
+    """
+    The trajectory for a swarm of robots.
+
+    args:
+        trajectories: the list of trajectories for each robot.
+    """
+
+    trajectories: List[LinearTrajectory2D]
+
+    def __call__(self, t: Float[Array, ""]) -> Float[Array, "N 2"]:
+        """Return the waypoints for each agent at a given time (linear interpolate)"""
+        return jnp.array([traj(t) for traj in self.trajectories])
+
+
+def sample_non_ego_trajectory(
+    key: PRNGKeyArray,
+    nominal_trajectory: MultiAgentTrajectoryLinear,
+    noise_scale: float = 0.05,
+) -> MultiAgentTrajectoryLinear:
+    """Sample a trajectory for the non-ego agents around a nominal trajectory.
 
     Args:
         key: A PRNG key.
-        env: The environment to sample actions for.
-        horizon: The number of steps to sample actions for.
-        n_non_ego: The number of non-ego vehicles.
-
-    Returns:
-        A NonEgoActions object.
+        nominal_trajectory: The trajectory to sample around.
+        noise_scale: The scale of the noise to use.
     """
+    # Pull the trajectory control points out of the data structure
+    nominal_trajectories = jnp.array([t.p for t in nominal_trajectory.trajectories])
+
+    # Add noise to the nominal trajectories
     noise_cov = noise_scale * jnp.eye(2)
-    keys = jrandom.split(key, horizon)
-    actions = jax.vmap(env.sample_non_ego_actions, in_axes=(0, None, None))(
-        keys,
-        noise_cov,
-        n_non_ego,
+    perturb_waypoint = lambda key, waypoint: jrandom.multivariate_normal(
+        key, waypoint, noise_cov
     )
-    return actions
+
+    def perturb_trajectory(key, trajectory):
+        keys = jrandom.split(key, trajectory.shape[0])
+        return jax.vmap(perturb_waypoint)(keys, trajectory)
+
+    keys = jrandom.split(key, len(nominal_trajectories))
+    perturbed_trajectories = jax.vmap(perturb_trajectory)(keys, nominal_trajectories)
+
+    # Wrap into a MultiAgentTrajectoryLinear
+    perturbed_trajectories = [
+        LinearTrajectory2D(p=perturbed_trajectory)
+        for perturbed_trajectory in perturbed_trajectories
+    ]
+
+    return MultiAgentTrajectoryLinear(trajectories=perturbed_trajectories)
 
 
-def non_ego_actions_prior_logprob(
-    actions: NonEgoActions,
-    env: HighwayEnv,
+def non_ego_trajectory_prior_logprob(
+    trajectory: MultiAgentTrajectoryLinear,
+    nominal_trajectory: MultiAgentTrajectoryLinear,
     noise_scale: float = 0.05,
 ) -> Float[Array, ""]:
-    """Compute the log probability of a set of non-ego actions.
+    """Compute the log probability of a non-ego trajectory.
 
     Args:
-        actions: The actions to compute the log probability of.
-        env: The environment to sample actions for
+        trajectory: The trajectory to compute the log probability of.
+        nominal_trajectory: The nominal trajectory to compute the log probability
+            around.
         noise_scale: The scale of the noise to use.
 
     Returns:
-        The log probability of the actions.
+        The log probability of the trajectory.
     """
+    # Pull the trajectory control points out of the data structure
+    trajectories = jnp.array([t.p for t in trajectory.trajectories])
+    nominal_trajectories = jnp.array([t.p for t in nominal_trajectory.trajectories])
+
+    # Compute the log probability of each waypoint
     noise_cov = noise_scale * jnp.eye(2)
-    logprob = jax.vmap(env.non_ego_actions_prior_logprob, in_axes=(0, None))(
-        actions,
-        noise_cov,
-    )
+    logprob = jax.vmap(
+        lambda waypoint, nominal_waypoint: jax.scipy.stats.multivariate_normal.logpdf(
+            waypoint, nominal_waypoint, noise_cov
+        )
+    )(trajectories, nominal_trajectories)
+
+    # Sum the log probabilities
     return logprob.mean()
 
 
@@ -146,7 +206,7 @@ def simulate(
     env: HighwayEnv,
     policy: DrivingPolicy,
     initial_state: HighwayState,
-    non_ego_actions: NonEgoActions,
+    non_ego_reference_trajectory: MultiAgentTrajectoryLinear,
     static_policy: DrivingPolicy,
     max_steps: int = 60,
 ) -> Float[Array, ""]:
@@ -162,7 +222,7 @@ def simulate(
         env: The environment to simulate.
         policy: The parts of the policy that are design parameters.
         initial_state: The initial state of the environment.
-        non_ego_actions: The actions of the non-ego vehicles.
+        non_ego_reference_trajectory: The reference trajectory for the non-ego agents.
         static_policy: the parts of the policy that are not design parameters.
         max_steps: The maximum number of steps to simulate.
 
@@ -175,7 +235,8 @@ def simulate(
     @jax.checkpoint
     def step(carry, scan_inputs):
         # Unpack the input
-        key, non_ego_action = scan_inputs
+        key, t = scan_inputs
+        reference_waypoint = non_ego_reference_trajectory(t)
 
         # Unpack the carry
         action, state, already_done = carry
@@ -184,14 +245,13 @@ def simulate(
         # to the environment and policy.
         step_subkey, action_subkey = jrandom.split(key)
 
-        # The action passed in is a residual applied to a stabilizing policy for each
-        # non-ego agent. The stabilizing policy is LQR tracking the initial state,
-        # except that the x position is updated to the current x position.
-        compute_lqr = lambda non_ego_state, initial_state: -K @ (
-            non_ego_state - initial_state
+        # Track the reference waypoint using an LQR controller
+        compute_lqr = lambda non_ego_state, waypoint_state: -K @ (
+            non_ego_state - waypoint_state
         )
-        target = initial_state.non_ego_states
-        target = target.at[:, 0].set(state.non_ego_states[:, 0])
+        target = initial_state.non_ego_states  # copy initial heading, velocity, etc.
+        # add the waypoint relative to the initial position
+        target = target.at[:, :2].add(reference_waypoint)
         non_ego_stable_action = jax.vmap(compute_lqr)(
             state.non_ego_states,
             target,
@@ -200,7 +260,7 @@ def simulate(
         # Take a step in the environment using the action carried over from the previous
         # step.
         next_state, next_observation, reward, done = env.step(
-            state, action, non_ego_action + non_ego_stable_action, step_subkey
+            state, action, non_ego_stable_action, step_subkey
         )
 
         # Compute the action for the next step
@@ -224,8 +284,9 @@ def simulate(
 
     # Transform and rollout!
     keys = jrandom.split(jrandom.PRNGKey(0), max_steps)
+    t = jnp.linspace(0, 1, max_steps)  # index into the reference trajectory
     (_, final_state, _), (reward, state_traj) = jax.lax.scan(
-        step, (initial_action, initial_state, False), (keys, non_ego_actions)
+        step, (initial_action, initial_state, False), (keys, t)
     )
 
     # Get the final observation
@@ -298,6 +359,23 @@ def plotting_cb(dp, eps, T=60):
             label="Non-ego 2" if chain_idx == 0 else None,
         )
 
+        axs["trajectory"].scatter(
+            eps.trajectories[0].p[chain_idx, :, 0]
+            + result.non_ego_trajectory[chain_idx, 0, 0, 0],
+            eps.trajectories[0].p[chain_idx, :, 1]
+            + result.non_ego_trajectory[chain_idx, 0, 0, 1],
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            marker="o",
+        )
+        axs["trajectory"].scatter(
+            eps.trajectories[1].p[chain_idx, :, 0]
+            + result.non_ego_trajectory[chain_idx, 0, 1, 0],
+            eps.trajectories[1].p[chain_idx, :, 1]
+            + result.non_ego_trajectory[chain_idx, 0, 1, 1],
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            marker="s",
+        )
+
     # Plot the reward across all failure cases
     axs["reward"].plot(result.potential, "ko")
     axs["reward"].set_ylabel("Potential (negative min reward)")
@@ -322,11 +400,11 @@ if __name__ == "__main__":
     # Set up arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--savename", type=str, default="highway")
+    parser.add_argument("--savename", type=str, default="highway_waypoint")
     parser.add_argument("--image_w", type=int, nargs="?", default=32)
     parser.add_argument("--image_h", type=int, nargs="?", default=32)
-    parser.add_argument("--noise_scale", type=float, nargs="?", default=0.1)
-    parser.add_argument("--failure_level", type=int, nargs="?", default=7.4)
+    parser.add_argument("--noise_scale", type=float, nargs="?", default=1.0)
+    parser.add_argument("--failure_level", type=int, nargs="?", default=7.5)
     parser.add_argument("--T", type=int, nargs="?", default=60)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
     parser.add_argument("--L", type=float, nargs="?", default=1.0)
@@ -382,21 +460,21 @@ if __name__ == "__main__":
 
     quench_dps_only = False
     if reinforce:
-        alg_type = f"reinforce_l2c_0.05_step_lr_{ep_mcmc_step_size:.1e}"
+        alg_type = f"reinforce_l2c_0.05_step_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
     elif hmc:
-        alg_type = f"hmc_steps_{num_hmc_integration_steps}_lr_{ep_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = f"hmc_steps_{num_hmc_integration_steps}_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
     elif use_gradients and use_stochasticity and use_mh and not zero_order_gradients:
-        alg_type = f"mala_lr_{ep_mcmc_step_size:.1e}"
+        alg_type = f"mala_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
         quench_dps_only = True
     elif use_gradients and use_stochasticity and use_mh and zero_order_gradients:
-        alg_type = f"mala_zo_lr_{ep_mcmc_step_size:.1e}"
+        alg_type = f"mala_zo_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
         quench_dps_only = True
     elif use_gradients and use_stochasticity and not use_mh:
-        alg_type = f"ula_lr_{ep_mcmc_step_size:.1e}"
+        alg_type = f"ula_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
     elif use_gradients and not use_stochasticity:
-        alg_type = f"gd_lr_{ep_mcmc_step_size:.1e}"
+        alg_type = f"gd_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
     elif not use_gradients and use_stochasticity and use_mh:
-        alg_type = f"rmh_lr_{ep_mcmc_step_size:.1e}"
+        alg_type = f"rmh_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
     elif not use_gradients and use_stochasticity and not use_mh:
         alg_type = "random_walk"
     else:
@@ -487,11 +565,27 @@ if __name__ == "__main__":
     prng_key, initial_state_key = jrandom.split(prng_key)
     initial_state = env.reset(initial_state_key)
 
+    # The nominal non-ego behavior is to drive straight
+    drive_straight = LinearTrajectory2D(
+        p=jnp.array(
+            [
+                [10.0, 0.0],
+                [20.0, 0.0],
+                [30.0, 0.0],
+                [40.0, 0.0],
+                [50.0, 0.0],
+            ]
+        )
+    )
+    nominal_trajectory = MultiAgentTrajectoryLinear(
+        trajectories=[drive_straight, drive_straight]
+    )
+
     # Initialize some random non-ego action trajectories as exogenous parameters
     prng_key, ep_key = jrandom.split(prng_key)
     ep_keys = jrandom.split(ep_key, num_chains)
     initial_eps = jax.vmap(
-        lambda key: sample_non_ego_actions(key, env, T, 2, noise_scale)
+        lambda key: sample_non_ego_trajectory(key, nominal_trajectory, noise_scale)
     )(ep_keys)
 
     # Also initialize a bunch of exogenous parameters to serve as stress test cases
@@ -499,7 +593,7 @@ if __name__ == "__main__":
     prng_key, ep_key = jrandom.split(prng_key)
     ep_keys = jrandom.split(ep_key, num_stress_test_cases)
     stress_test_eps = jax.vmap(
-        lambda key: sample_non_ego_actions(key, env, T, 2, noise_scale)
+        lambda key: sample_non_ego_trajectory(key, nominal_trajectory, noise_scale)
     )(ep_keys)
 
     # Choose which sampler to use
@@ -557,7 +651,9 @@ if __name__ == "__main__":
         initial_dps,
         initial_eps,
         dp_logprior_fn=dp_prior_logprob,
-        ep_logprior_fn=lambda ep: non_ego_actions_prior_logprob(ep, env, noise_scale),
+        ep_logprior_fn=lambda ep: non_ego_trajectory_prior_logprob(
+            ep, nominal_trajectory, noise_scale
+        ),
         ep_potential_fn=lambda dp, ep: -L
         * jax.nn.elu(
             failure_level
@@ -581,7 +677,7 @@ if __name__ == "__main__":
         quench_dps_only=quench_dps_only,
         tempering_schedule=tempering_schedule,
         logging_prefix=f"{args.savename}/{alg_type}[{os.getpid()}]",
-        stress_test_cases=None,  # stress_test_eps, # TODO
+        stress_test_cases=stress_test_eps,
         potential_fn=lambda dp, ep: simulate(
             env, dp, initial_state, ep, static_policy, T
         ).potential,
