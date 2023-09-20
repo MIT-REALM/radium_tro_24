@@ -9,5 +9,5 @@ conda init
 source ~/.bashrc
 conda create -n architect_env python=3.9 -y
 conda activate architect_env
-cd ~/src/architect_private && pip install -e . && pip install -r requirements.txt
+cd ~/src/architect_private && pip install -e . && pip install -r requirements.txt --ignore-requires-python
 pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
