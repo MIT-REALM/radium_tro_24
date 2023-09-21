@@ -16,7 +16,7 @@ from jaxtyping import Array, Bool, Float, jaxtyped
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from architect.experiments.highway.predict_and_mitigate import sample_non_ego_actions
+# from architect.experiments.highway.predict_and_mitigate import sample_non_ego_actions  # TODO: fix
 from architect.systems.components.sensing.vision.render import CameraIntrinsics
 from architect.systems.intersection.env import HighwayObs, IntersectionEnv
 from architect.systems.intersection.oracle import oracle_policy

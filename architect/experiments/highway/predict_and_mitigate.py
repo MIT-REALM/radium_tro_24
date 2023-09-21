@@ -252,10 +252,7 @@ def simulate(
         target = initial_state.non_ego_states  # copy initial heading, velocity, etc.
         # add the waypoint relative to the initial position
         target = target.at[:, :2].add(reference_waypoint)
-        non_ego_stable_action = jax.vmap(compute_lqr)(
-            state.non_ego_states,
-            target,
-        )
+        non_ego_stable_action = jax.vmap(compute_lqr)(state.non_ego_states, target)
 
         # Take a step in the environment using the action carried over from the previous
         # step.
