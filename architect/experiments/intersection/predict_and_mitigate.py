@@ -206,7 +206,7 @@ def simulate(
     # and penalize the agent for not crossing the road
     target_x = 20.0
     distance_to_target_x = jax.nn.elu(target_x - final_state.ego_state[0])
-    potential = -softmin(reward, sharpness=5.0) + 0.1 * distance_to_target_x
+    potential = -softmin(reward, sharpness=0.5) + 0.1 * distance_to_target_x
 
     return SimulationResults(
         potential,
@@ -334,7 +334,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_w", type=int, nargs="?", default=32)
     parser.add_argument("--image_h", type=int, nargs="?", default=32)
     parser.add_argument("--noise_scale", type=float, nargs="?", default=1.0)
-    parser.add_argument("--failure_level", type=float, nargs="?", default=5.0)
+    parser.add_argument("--failure_level", type=float, nargs="?", default=11.0)
     parser.add_argument("--T", type=int, nargs="?", default=100)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
     parser.add_argument("--L", type=float, nargs="?", default=1.0)
@@ -523,22 +523,22 @@ if __name__ == "__main__":
     drive_straight_left2right = LinearTrajectory2D(
         p=jnp.array(
             [
-                [0.0, -5.0],
                 [0.0, -10.0],
-                [0.0, -15.0],
                 [0.0, -20.0],
-                [0.0, -25.0],
+                [0.0, -30.0],
+                [0.0, -40.0],
+                [0.0, -50.0],
             ]
         )
     )
     drive_straight_right2left = LinearTrajectory2D(
         p=jnp.array(
             [
-                [0.0, 5.0],
                 [0.0, 10.0],
-                [0.0, 15.0],
                 [0.0, 20.0],
-                [0.0, 25.0],
+                [0.0, 30.0],
+                [0.0, 40.0],
+                [0.0, 50.0],
             ]
         )
     )
