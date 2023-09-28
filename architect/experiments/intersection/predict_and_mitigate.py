@@ -1,7 +1,6 @@
 """Code to predict and mitigate failure modes in the intersection scenario."""
 import argparse
 import json
-import operator
 import os
 import shutil
 import time
@@ -383,35 +382,6 @@ if __name__ == "__main__":
     quench_rounds = args.quench_rounds
     grad_clip = args.grad_clip
     normalize_gradients = not args.dont_normalize_gradients
-
-    # print("Running prediction/mitigation on intersection with hyperparameters:")
-    # print(f"\tmodel_path = {args.model_path}")
-    # print(f"\timage dimensions (w x h) = {args.image_w} x {args.image_h}")
-    # print(f"\tnoise_scale = {noise_scale}")
-    # print(f"\tfailure_level = {failure_level}")
-    # print(f"\tT = {T}")
-    # print(f"\tseed = {seed}")
-    # print(f"\tL = {L}")
-    # print(f"\tdp_logprior_scale = {dp_logprior_scale}")
-    # print(f"\tdp_mcmc_step_size = {dp_mcmc_step_size}")
-    # print(f"\tep_mcmc_step_size = {ep_mcmc_step_size}")
-    # print(f"\tnum_rounds = {num_rounds}")
-    # print(f"\tnum_steps_per_round = {num_steps_per_round}")
-    # print(f"\tnum_chains = {num_chains}")
-    # print(f"\tnum_stress_test_cases = {num_stress_test_cases}")
-    # print(f"\tuse_gradients = {use_gradients}")
-    # print(f"\tuse_stochasticity = {use_stochasticity}")
-    # print(f"\tuse_mh = {use_mh}")
-    # print(f"\trepair = {repair}")
-    # print(f"\tpredict = {predict}")
-    # print(f"\ttemper = {temper}")
-    # print(f"\tquench_rounds = {quench_rounds}")
-    # print(f"\tgrad_clip = {grad_clip}")
-    # print(f"\tnormalize_gradients = {normalize_gradients}")
-    # print(
-    #     f"Using alternative algorithm? {reinforce}",
-    #     f"(reinforce = {reinforce})",
-    # )
 
     quench_dps_only = False
     if reinforce:
