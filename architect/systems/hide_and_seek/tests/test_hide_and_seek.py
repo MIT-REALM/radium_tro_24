@@ -125,7 +125,7 @@ def benchmark_Game():
     )
 
     # See how fast it takes to run
-    N_trials = 100
+    N_trials = 10
     potential_fn = lambda seeker_traj, hider_traj, seeker_disturbance_traj: game(
         seeker_traj, hider_traj, seeker_disturbance_traj
     ).potential
@@ -169,7 +169,7 @@ def benchmark_Game():
     z_vals = jnp.linspace(-0.5, 0.5, 100)
     f_vals = jax.vmap(f)(z_vals)
     f_grad_vals = jax.vmap(jax.grad(f))(z_vals)
-    # plt.plot(z_vals, f_vals, "k--")
+    plt.plot(z_vals, f_vals, "k--")
     plt.plot(z_vals, f_grad_vals, "r-", label="Gradient")
     f_grad_vals_fd = np.gradient(f_vals, z_vals)
     plt.plot(z_vals, f_grad_vals_fd, "b--", label="Finite diff")
