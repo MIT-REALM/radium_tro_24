@@ -1,4 +1,5 @@
 """Define a highway scene with a variable number of lanes and cars."""
+
 import jax
 import jax.numpy as jnp
 from beartype import beartype
@@ -59,8 +60,7 @@ class Car(NamedTuple):
     def height(self):
         return self.h_base + self.h_chassis + self.h_top
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def get_shapes(
         self,
         state: Float[Array, " 3"],
@@ -220,8 +220,7 @@ class HighwayScene:
         self.car = Car()  # re-used for all cars
         self.lane_width = lane_width
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def _get_shapes(
         self,
         car_states: Float[Array, "n_car 3"],
@@ -253,8 +252,7 @@ class HighwayScene:
 
         return Scene(shapes=shapes, sharpness=sharpness)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def check_for_collision(
         self,
         collider_state: Float[Array, " 3"],
@@ -302,8 +300,7 @@ class HighwayScene:
         # Return the minimum distance to any obstacle (negative if there's a collision)
         return jax.vmap(scene)(collider_pts_world).min()
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_depth(
         self,
         intrinsics: CameraIntrinsics,
@@ -337,8 +334,7 @@ class HighwayScene:
         ).reshape(intrinsics.resolution)
         return depth_image
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_rgbd(
         self,
         intrinsics: CameraIntrinsics,

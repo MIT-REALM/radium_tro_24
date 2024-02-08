@@ -1,4 +1,5 @@
 """Train an agent for the intersection environment using PPO."""
+
 import os
 from functools import partial
 
@@ -38,8 +39,7 @@ class Trajectory(NamedTuple):
     done: Bool[Array, ""]
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def generalized_advantage_estimate(
     rewards: Float[Array, " n_steps"],
     values: Float[Array, " n_steps+1"],
@@ -94,8 +94,7 @@ def generalized_advantage_estimate(
     return advantages, returns
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def generate_trajectory(
     env: IntersectionEnv,
     policy: DrivingPolicy,
@@ -180,8 +179,7 @@ def generate_trajectory(
     return trajectory
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def shuffle_trajectory(traj: Trajectory, key: PRNGKeyArray) -> Trajectory:
     """Shuffle the trajectory.
 
@@ -200,8 +198,7 @@ def shuffle_trajectory(traj: Trajectory, key: PRNGKeyArray) -> Trajectory:
     return traj
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def ppo_clip_loss_fn(
     policy: DrivingPolicy,
     traj: Trajectory,

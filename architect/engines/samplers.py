@@ -1,4 +1,5 @@
 """Implement sampling algorithms"""
+
 import operator
 
 import jax
@@ -13,8 +14,7 @@ from jaxtyping import Array, Bool, Float, Integer, jaxtyped
 from architect.types import LogLikelihood, Params, PRNGKeyArray, Sampler
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class SamplerState(NamedTuple):
     """State for samplers."""
 
@@ -51,8 +51,7 @@ def normalize_gradients_with_threshold(
     return normalized_gradients
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def weight_perturbation_gradient_estimator(
     logdensity_fn: LogLikelihood,
     position: Params,
@@ -104,8 +103,7 @@ def weight_perturbation_gradient_estimator(
     return logdensity, gradient_estimate
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def init_sampler(
     position: Params,
     logdensity_fn: LogLikelihood,
@@ -155,8 +153,7 @@ def init_sampler(
     return SamplerState(position, logdensity, logdensity_grad, jnp.array(0))
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def make_kernel(
     logdensity_fn: LogLikelihood,
     step_size: Union[float, Float[Array, ""]],
@@ -195,8 +192,7 @@ def make_kernel(
     # an accept/reject step.
 
     # Start by defining the proposal log likelihood
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def transition_log_probability(
         state: SamplerState,
         new_state: SamplerState,
@@ -227,8 +223,7 @@ def make_kernel(
         transition_log_probability = -0.25 * (1.0 / step_size) * theta_dot
         return transition_log_probability
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def one_step(prng_key: PRNGKeyArray, state: SamplerState) -> SamplerState:
         """Generate a new sample"""
         # Split the key

@@ -1,11 +1,11 @@
 """Vision utility functions."""
+
 import jax.numpy as jnp
 from beartype import beartype
 from jaxtyping import Array, Float, jaxtyped
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def look_at(
     camera_origin: Float[Array, " 3"],
     target: Float[Array, " 3"],

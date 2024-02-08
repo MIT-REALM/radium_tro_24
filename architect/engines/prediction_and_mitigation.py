@@ -3,6 +3,7 @@ Failure mode prediction and mitigation code.
 
 Provides system-agnostic code for failure mode prediction and mitigation.
 """
+
 import operator
 import time
 
@@ -10,17 +11,15 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
-import wandb
 from beartype import beartype
 from beartype.typing import Any, Callable, Optional, Tuple
 from jaxtyping import Array, Float, Integer, PyTree, jaxtyped
 
+import wandb
 from architect.types import LogLikelihood, Params, Sampler
-from architect.utils import softmin
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def run_chain(
     prng_key: Integer[Array, "..."],
     kernel: Sampler,
@@ -83,8 +82,7 @@ def run_chain(
     )
 
 
-# @jaxtyped
-# @beartype
+# @jaxtyped(typechecker=beartype)
 def predict_and_mitigate_failure_modes(
     prng_key: Integer[Array, "..."],
     design_params: Params,

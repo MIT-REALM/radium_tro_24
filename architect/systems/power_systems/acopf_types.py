@@ -5,8 +5,7 @@ from jax.nn import relu, sigmoid
 from jaxtyping import Array, Float, Integer  # jaxtyped,
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class GenerationDispatch(NamedTuple):
     """
     Dispatched power and voltage amplitude for each generator
@@ -20,8 +19,7 @@ class GenerationDispatch(NamedTuple):
     voltage_amplitudes: Float[Array, " n_bus"]
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class LoadDispatch(NamedTuple):
     """
     Dispatched real and reactive power loads.
@@ -35,8 +33,7 @@ class LoadDispatch(NamedTuple):
     Q: Float[Array, " n_bus"]
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class Dispatch(NamedTuple):
     """
     Combined generation and load dispatch
@@ -50,8 +47,7 @@ class Dispatch(NamedTuple):
     load: LoadDispatch
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class InterconnectionSpecification(NamedTuple):
     """
     Specification of interconnection buses, limits, and costs.
@@ -104,8 +100,7 @@ class InterconnectionSpecification(NamedTuple):
         return P_violation, Q_violation
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class NetworkState(NamedTuple):
     """
     Representation of network connectivity for AC power flow.
@@ -118,8 +113,7 @@ class NetworkState(NamedTuple):
     line_states: Float[Array, " n_lines"]
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class NetworkSpecification(NamedTuple):
     """
     Specification of network parameters.
@@ -253,8 +247,7 @@ class NetworkSpecification(NamedTuple):
         return Y_bus
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class ACOPFResult(NamedTuple):
     """
     Result of running the ACOPF algorithm.

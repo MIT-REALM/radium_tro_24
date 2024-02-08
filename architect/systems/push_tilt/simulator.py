@@ -1,5 +1,4 @@
 """Define a simulator for the pusher-slider system"""
-import math
 
 import equinox as eqx
 import jax
@@ -7,10 +6,8 @@ import jax.numpy as jnp
 from beartype import beartype
 from beartype.typing import NamedTuple
 from jaxtyping import Array, Float, jaxtyped
-from tqdm import tqdm
 
 from architect.types import PRNGKeyArray
-from architect.utils import softmin
 
 
 class PushTiltResult(NamedTuple):
@@ -121,8 +118,7 @@ def observation_logprior(
     return logprior
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def simulate(
     planner: Planner,
     observations: Float[Array, " 2"],

@@ -1,6 +1,6 @@
 """Train an agent for the drone environment using behavior cloning."""
+
 import os
-from functools import partial
 
 import equinox as eqx
 import jax
@@ -12,7 +12,7 @@ import optax
 from beartype import beartype
 from beartype.typing import NamedTuple, Tuple
 from jax_tqdm import scan_tqdm
-from jaxtyping import Array, Bool, Float, jaxtyped
+from jaxtyping import Array, Float, jaxtyped
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -36,8 +36,7 @@ class Trajectory(NamedTuple):
     expert_actions: Float[Array, " n_actions"] = None
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def generate_trajectory_learner(
     env: IntersectionEnv,
     policy: DrivingPolicy,
@@ -112,8 +111,7 @@ def generate_trajectory_learner(
     return trajectory
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def generate_trajectory_expert(
     env: IntersectionEnv,
     key: PRNGKeyArray,
@@ -187,8 +185,7 @@ def generate_trajectory_expert(
     return trajectory
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def shuffle_trajectory(traj: Trajectory, key: PRNGKeyArray) -> Trajectory:
     """Shuffle the trajectory.
 

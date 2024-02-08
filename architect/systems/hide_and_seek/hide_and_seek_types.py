@@ -12,8 +12,7 @@ from scipy.special import binom
 from architect.types import PRNGKeyArray
 
 
-# @jaxtyped
-# @beartype
+# @jaxtyped(typechecker=beartype)
 class Trajectory2D(NamedTuple):
     """
     The trajectory for a single robot, represented by a fixed-degree Bezier curve.
@@ -42,8 +41,7 @@ class Trajectory2D(NamedTuple):
         return binom(self.n, self.i)
 
     @jax.jit
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __call__(self, t: Float[Array, ""]) -> Float[Array, "2"]:
         """Return the point along the trajectory at the given time"""
         # Bezier curves have an explicit form
@@ -54,8 +52,7 @@ class Trajectory2D(NamedTuple):
         )
 
 
-# @jaxtyped
-# @beartype
+# @jaxtyped(typechecker=beartype)
 class MultiAgentTrajectory(NamedTuple):
     """
     The trajectory for a swarm of robots.
@@ -66,14 +63,13 @@ class MultiAgentTrajectory(NamedTuple):
 
     trajectories: List[Trajectory2D]
 
-    @jaxtyped
+    @jaxtyped(typechecker=beartype)
     def __call__(self, t: Float[Array, ""]) -> Float[Array, "N 2"]:
         """Return the waypoints for each agent at a given time (Bezier interpolate)"""
         return jnp.array([traj(t) for traj in self.trajectories])
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Arena(eqx.Module):
     """
     The arena in which hide and seek takes place
@@ -91,8 +87,7 @@ class Arena(eqx.Module):
 
     smoothing: float = 20.0
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def trajectory_prior_logprob(self, traj: Trajectory2D) -> Float[Array, ""]:
         """
         Compute the prior log probability of the given trajectory.
@@ -119,8 +114,7 @@ class Arena(eqx.Module):
 
         return logprob_x + logprob_y
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_random_trajectory(
         self,
         key: PRNGKeyArray,
@@ -157,8 +151,7 @@ class Arena(eqx.Module):
 
         return Trajectory2D(p)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def multi_trajectory_prior_logprob(
         self, multi_traj: MultiAgentTrajectory
     ) -> Float[Array, ""]:
@@ -169,8 +162,7 @@ class Arena(eqx.Module):
             [self.trajectory_prior_logprob(traj) for traj in multi_traj.trajectories]
         )
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_random_multi_trajectory(
         self,
         key: PRNGKeyArray,

@@ -1,14 +1,13 @@
 """Define a simulator for the F16 system"""
+
 import math
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from beartype import beartype
 from beartype.typing import NamedTuple
 from jax_f16.f16 import F16
-from jaxtyping import Array, Float, jaxtyped
-from tqdm import tqdm
+from jaxtyping import Array, Float
 
 from architect.types import PRNGKeyArray
 from architect.utils import softmin
@@ -264,8 +263,7 @@ def initial_state_logprior(x: Float[Array, " 5"]) -> Float[Array, ""]:
     return logprior
 
 
-# @jaxtyped
-# @beartype
+# @jaxtyped(typechecker=beartype)
 def simulate(
     initial_state: Float[Array, " 5"],
     residual_controller: ResidualControl,

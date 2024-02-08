@@ -23,8 +23,7 @@ from architect.systems.power_systems.acopf_types import (
 from architect.types import PRNGKeyArray
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class ACOPF(eqx.Module):
     """
     Defines an autonomous system modelling AC optimal power flow.
@@ -82,8 +81,7 @@ class ACOPF(eqx.Module):
         """Return the number of lines in the network"""
         return self.network_spec.n_line
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def power_injections(
         self,
         network_state: NetworkState,
@@ -116,16 +114,14 @@ class ACOPF(eqx.Module):
 
         return P, Q
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def generation_cost(self, dispatch: Dispatch) -> Float[Array, ""]:
         """
         Compute the cost of generation given power injections.
         """
         return self.gen_spec.cost(dispatch.gen.P) + self.load_spec.cost(dispatch.load.P)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def constraint_violations(
         self,
         P_gen: Float[Array, " n_gen"],
@@ -168,8 +164,7 @@ class ACOPF(eqx.Module):
             "V": V_violation,
         }
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def complete_voltages(
         self,
         network_state: NetworkState,
@@ -293,8 +288,7 @@ class ACOPF(eqx.Module):
 
         return V_nongen, voltage_angles_nonref, acopf_residual
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def complete_powers(
         self,
         network_state: NetworkState,
@@ -338,8 +332,7 @@ class ACOPF(eqx.Module):
 
         return Q_gen, P_ref, Q_ref
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __call__(
         self,
         dispatch: Dispatch,
@@ -433,8 +426,7 @@ class ACOPF(eqx.Module):
 
         return result
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def dispatch_prior_logprob(self, dispatch: Dispatch) -> Float[Array, ""]:
         """
         Compute the prior log probability of the given dispatch.
@@ -468,8 +460,7 @@ class ACOPF(eqx.Module):
 
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_random_dispatch(self, key: PRNGKeyArray) -> Dispatch:
         """
         Sample a random dispatch from the uniform distribution within its limits
@@ -502,8 +493,7 @@ class ACOPF(eqx.Module):
             LoadDispatch(P_load, Q_load),
         )
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def network_state_prior_logprob(
         self, network_state: NetworkState
     ) -> Float[Array, ""]:
@@ -531,8 +521,7 @@ class ACOPF(eqx.Module):
 
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_random_network_state(self, key: PRNGKeyArray) -> NetworkState:
         """
         Sample a random network state

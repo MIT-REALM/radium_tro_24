@@ -1,7 +1,7 @@
 """Code to predict and mitigate failure modes in the highway scenario."""
+
 import argparse
 import json
-import operator
 import os
 import shutil
 import time
@@ -14,10 +14,10 @@ import jax.tree_util as jtu
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
-import wandb
 from beartype.typing import List, NamedTuple
 from jaxtyping import Array, Float, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
 from architect.engines.blackjax import make_hmc_step_and_initial_state
 from architect.engines.reinforce import init_sampler as init_reinforce_sampler
@@ -106,8 +106,7 @@ class LinearTrajectory2D(NamedTuple):
         )
 
 
-# @jaxtyped
-# @beartype
+# @jaxtyped(typechecker=beartype)
 class MultiAgentTrajectoryLinear(NamedTuple):
     """
     The trajectory for a swarm of robots.

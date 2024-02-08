@@ -22,8 +22,7 @@ def softnorm(x):
     return jax.lax.cond(jnp.linalg.norm(x) >= eps, jnp.linalg.norm, scaled_square, x)
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Game(eqx.Module):
     """
     The hide and seek game engine
@@ -55,8 +54,7 @@ class Game(eqx.Module):
     def softmin(self, x: Float[Array, "..."]) -> Float[Array, ""]:
         return -1 / self.b * logsumexp(-self.b * x)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __call__(
         self,
         seeker_trajectory: MultiAgentTrajectory,

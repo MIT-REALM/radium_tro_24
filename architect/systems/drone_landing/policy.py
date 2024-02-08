@@ -26,8 +26,7 @@ class DroneLandingPolicy(eqx.Module):
 
     actor_fcn: eqx.nn.MLP
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __init__(
         self,
         key: PRNGKeyArray,

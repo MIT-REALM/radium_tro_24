@@ -150,8 +150,7 @@ def sample_random_connection_strengths(
     return connection_strengths
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def connection_strength_prior_logprob(
     connection_strengths: Float[Array, "n n"]
 ) -> Float[Array, ""]:
@@ -178,8 +177,7 @@ def connection_strength_prior_logprob(
     return logprob
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def simulate(
     target_trajectories: MultiAgentTrajectory,
     initial_states: Float[Array, "n 4"],

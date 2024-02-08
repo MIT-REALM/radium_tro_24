@@ -35,8 +35,7 @@ class CameraExtrinsics(NamedTuple):
     camera_origin: Float[Array, " 3"]
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def pinhole_camera_rays(
     intrinsics: CameraIntrinsics,
     extrinsics: CameraExtrinsics,
@@ -73,8 +72,7 @@ def pinhole_camera_rays(
     return rays @ camera_R_to_world.T
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def raycast(
     sdf: Callable[[Float[Array, " 3"]], Float[Array, ""]],
     origin: Float[Array, " 3"],
@@ -137,8 +135,7 @@ def raycast(
     return origin + distance_along_ray * ray
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def raycast_shadow(
     sdf: Callable[[Float[Array, " 3"]], Float[Array, ""]],
     origin: Float[Array, " 3"],

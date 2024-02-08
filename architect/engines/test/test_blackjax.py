@@ -8,8 +8,7 @@ from architect.engines.blackjax import make_hmc_step_and_initial_state
 
 
 # Define a test likelihood
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def quadratic_potential(x: Float[Array, " n"]):
     return -0.5 * (x**2).sum()
 

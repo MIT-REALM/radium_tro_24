@@ -4,6 +4,7 @@ Note that these are intended for the purpose of rendering a view of a 3D scene, 
 for contact simulation or collision detection. As a result, these functions may not
 return a fully accurate SDF, but they should be sufficient for rendering.
 """
+
 from abc import ABC, abstractmethod
 
 import equinox as eqx
@@ -138,8 +139,7 @@ class Subtraction(SDFShape):
         return self.shape1.color(x)
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Sphere(SDFShape):
     """Represent a sphere using a SDF.
 
@@ -163,8 +163,7 @@ class Sphere(SDFShape):
         return softnorm(x - self.center) - self.radius
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Halfspace(SDFShape):
     """Represent a halfspace using a SDF.
 
@@ -204,8 +203,7 @@ class Halfspace(SDFShape):
         return super().color(x)
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Box(SDFShape):
     """Represent a box using a SDF.
 
@@ -261,8 +259,7 @@ class Box(SDFShape):
         return super().color(x)
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Cylinder(SDFShape):
     """Represent a capped cylinder using a SDF.
 

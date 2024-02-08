@@ -1,4 +1,5 @@
 """Implement an interface to `BlackJax <https://blackjax-devs.github.io/blackjax/>`_."""
+
 import blackjax
 import jax
 import jax.numpy as jnp
@@ -27,8 +28,7 @@ class BlackJaxState(NamedTuple):
     blackjax_state: NamedTuple
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def make_hmc_step_and_initial_state(
     logdensity_fn: LogLikelihood,
     position: Params,
@@ -76,8 +76,7 @@ def make_hmc_step_and_initial_state(
     )
 
     # Define the step function wrapping blackjax.
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def step(key: PRNGKeyArray, state: BlackJaxState) -> BlackJaxState:
         """Take one step.
 
