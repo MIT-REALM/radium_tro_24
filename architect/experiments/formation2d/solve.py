@@ -250,6 +250,7 @@ if __name__ == "__main__":
             "temper": temper,
             "quench_rounds": quench_rounds,
             "grad_clip": grad_clip,
+            "num_stress_test_cases": num_stress_test_cases,
         },
     )
 
@@ -406,6 +407,7 @@ if __name__ == "__main__":
         failure_level=failure_level,
         potential_fn=lambda dp, ep: simulate_fn(dp, ep).potential,
         plotting_cb=plotting_cb,
+        test_every=10,
     )
     t_end = time.perf_counter()
     print(
