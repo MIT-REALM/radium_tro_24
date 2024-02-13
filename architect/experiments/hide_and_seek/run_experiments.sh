@@ -19,5 +19,5 @@ do
     CUDA_VISIBLE_DEVICES=, python architect/experiments/hide_and_seek/solve_hide_and_seek.py --num_rounds 100 --n_seekers 12 --n_hiders 20 --height 12.8 --width 4.0 --failure_level 0.0 --seed $seed --quench_rounds 40 &
     CUDA_VISIBLE_DEVICES=, python architect/experiments/hide_and_seek/solve_hide_and_seek.py --num_rounds 100 --n_seekers 12 --n_hiders 20 --height 12.8 --width 4.0 --failure_level 0.0 --reinforce --seed $seed &
 
-    wait;
+    w
 done
