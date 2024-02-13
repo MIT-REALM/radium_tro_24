@@ -14,6 +14,7 @@ import jax.tree_util as jtu
 from beartype import beartype
 from beartype.typing import Any, Callable, Optional, Tuple
 from jaxtyping import Array, Float, Integer, PyTree, jaxtyped
+from tqdm import tqdm
 
 import wandb
 from architect.types import LogLikelihood, Params, Sampler
@@ -108,6 +109,7 @@ def predict_and_mitigate_failure_modes(
     potential_fn: Optional[Callable[[Params, Params], Float[Array, ""]]] = None,
     failure_level: float = 0.0,
     plotting_cb: Optional[Callable[[Params, Params], None]] = None,
+    test_every: int = 1,
 ) -> Tuple[
     Params,
     Params,
@@ -162,6 +164,7 @@ def predict_and_mitigate_failure_modes(
             The callback function should take the current best dp and all predicted
             eps as arguments, and it should log any desired images or plots to wandb,
             but it should NOT commit those logs.
+        test_every: the number of steps between stress tests and plotting
 
     returns:
         - A trace of updated populations of design parameters
@@ -312,16 +315,22 @@ def predict_and_mitigate_failure_modes(
     current_best_dps = jtu.tree_map(lambda leaf: leaf[0], design_params)
 
     predicted_costs = stress_test_dps(current_best_dps, exogenous_params)
-    log_dict["Failure rate (predicted)"] = (predicted_costs > failure_level).mean()
+    log_dict["Mean Cost/predicted"] = predicted_costs.mean()
+    log_dict["Min Cost/predicted"] = predicted_costs.min()
+    log_dict["Max Cost/predicted"] = predicted_costs.max()
+    log_dict["Std Cost/predicted"] = predicted_costs.std()
+    log_dict["Failure rate/predicted"] = (predicted_costs > failure_level).mean()
 
     if stress_test_cases is not None:
         # Stress test current best DP
         stress_test_costs = stress_test_dps(current_best_dps, stress_test_cases)
 
         log_dict = log_dict | {
-            "Mean Cost": stress_test_costs.mean(),
-            "Max Cost": stress_test_costs.max(),
-            "Failure rate (test)": (stress_test_costs > failure_level).mean(),
+            "Mean Cost/test": stress_test_costs.mean(),
+            "Min Cost/test": stress_test_costs.min(),
+            "Max Cost/test": stress_test_costs.max(),
+            "Std Cost/test": stress_test_costs.std(),
+            "Failure rate/test": (stress_test_costs > failure_level).mean(),
         }
 
     if plotting_cb is not None:
@@ -334,9 +343,9 @@ def predict_and_mitigate_failure_modes(
     carry = (0, design_params, exogenous_params)
     keys = jrandom.split(prng_key, num_rounds)
     results = []
-    for i, (key, tempering) in enumerate(zip(keys, tempering_schedule)):
+    for i, (key, tempering) in enumerate(zip(tqdm(keys), tempering_schedule)):
         # Run the SMC round to update both the design and exogenous parameters
-        print(f"{logging_prefix} - Iteration {i}")
+        # print(f"{logging_prefix} - Iteration {i}")
         start = time.perf_counter()
         carry, y = one_smc_step(carry, (key, tempering))
         end = time.perf_counter()
@@ -365,21 +374,29 @@ def predict_and_mitigate_failure_modes(
         current_best_dps = jtu.tree_map(
             lambda leaf: leaf[most_likely_dps_idx], current_dps
         )
-        if stress_test_cases is not None:
+        if stress_test_cases is not None and (
+            i == num_rounds - 1 or i % test_every == 0
+        ):
             # Stress test current best DP
             stress_test_costs = stress_test_dps(current_best_dps, stress_test_cases)
 
             log_dict = log_dict | {
-                "Mean Cost": stress_test_costs.mean(),
-                "Max Cost": stress_test_costs.max(),
-                "Failure rate (test)": (stress_test_costs > failure_level).mean(),
+                "Mean Cost/test": stress_test_costs.mean(),
+                "Min Cost/test": stress_test_costs.min(),
+                "Max Cost/test": stress_test_costs.max(),
+                "Std Cost/test": stress_test_costs.std(),
+                "Failure rate/test": (stress_test_costs > failure_level).mean(),
             }
 
         # Log the failure rate on the predicted test cases
         predicted_costs = stress_test_dps(current_best_dps, current_eps)
-        log_dict["Failure rate (predicted)"] = (predicted_costs > failure_level).mean()
+        log_dict["Mean Cost/predicted"] = predicted_costs.mean()
+        log_dict["Min Cost/predicted"] = predicted_costs.min()
+        log_dict["Max Cost/predicted"] = predicted_costs.max()
+        log_dict["Std Cost/predicted"] = predicted_costs.std()
+        log_dict["Failure rate/predicted"] = (predicted_costs > failure_level).mean()
 
-        if plotting_cb is not None:
+        if plotting_cb is not None and (i == num_rounds - 1 or i % test_every == 0):
             plotting_cb(current_best_dps, current_eps)
 
         # Print some results to the console

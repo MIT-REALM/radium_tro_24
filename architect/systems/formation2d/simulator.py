@@ -254,7 +254,7 @@ def simulate(
     # Add a term that encourages getting the formation COM to the desired position
     formation_final_com = jnp.mean(qs[-1, :, :2], axis=0)
     potential += 10 * jnp.sqrt(
-        jnp.sum((formation_final_com - goal_com_position) ** 2) + 1e-2
+        jnp.mean((formation_final_com - goal_com_position) ** 2) + 1e-2
     )
 
     # Return the result

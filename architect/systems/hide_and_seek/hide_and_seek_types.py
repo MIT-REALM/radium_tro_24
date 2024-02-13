@@ -6,7 +6,7 @@ import numpy as np
 from beartype import beartype
 from beartype.typing import List, NamedTuple
 from jax.nn import log_sigmoid
-from jaxtyping import Array, Float, jaxtyped
+from jaxtyping import Array, Float, Integer, jaxtyped
 from scipy.special import binom
 
 from architect.types import PRNGKeyArray
@@ -207,5 +207,7 @@ class HideAndSeekResult(NamedTuple):
 
     seeker_positions: Float[Array, "T 2"]
     hider_positions: Float[Array, "T 2"]
+
+    escaped: Integer[Array, " n_seeker"]
 
     potential: Float[Array, ""]

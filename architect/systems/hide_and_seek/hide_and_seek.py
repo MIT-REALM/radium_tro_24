@@ -140,10 +140,20 @@ class Game(eqx.Module):
 
         # Compute the cost as the (smoothed) minimum squared distance between each hider
         # and its closest seeker
-        hider_to_closest_seeker_distance = jax.vmap(self.softmin)(
+        softmin_hider_to_closest_seeker_distance = jax.vmap(self.softmin)(
             hider_to_closest_seeker_distance.T
         )
-        cost = jax.nn.elu(hider_to_closest_seeker_distance - self.sensing_range).sum()
+        # cost = jax.nn.celu(
+        #     (softmin_hider_to_closest_seeker_distance - self.sensing_range)
+        #     / self.sensing_range,
+        #     alpha=1.0,
+        # ).mean()
+        cost = -self.softmin(  # max distance outside sensing range
+            -(softmin_hider_to_closest_seeker_distance - self.sensing_range)
+        )
+        num_escaped_hiders = (
+            softmin_hider_to_closest_seeker_distance > self.sensing_range
+        ).sum()
 
         return HideAndSeekResult(
             seeker_trajectory=seeker_trajectory,
@@ -152,4 +162,5 @@ class Game(eqx.Module):
             seeker_positions=seeker_positions,
             hider_positions=hider_positions,
             potential=cost,
+            escaped=num_escaped_hiders,
         )
