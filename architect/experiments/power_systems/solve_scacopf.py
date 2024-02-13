@@ -7,33 +7,137 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-import wandb
 from jax.nn import sigmoid
 from jaxtyping import Array, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
+from architect.engines.reinforce import init_sampler as init_reinforce_sampler
+from architect.engines.reinforce import make_kernel as make_reinforce_kernel
 from architect.engines.samplers import init_sampler as init_mcmc_sampler
 from architect.engines.samplers import make_kernel as make_mcmc_kernel
 from architect.systems.power_systems.load_test_network import load_test_network
 
+
+def plotting_cb(dp, eps):
+    result = jax.vmap(sys, in_axes=(None, 0))(dp, eps)
+
+    # Plot the results
+    fig = plt.figure(figsize=(32, 16), constrained_layout=True)
+    axs = fig.subplot_mosaic(
+        [
+            ["constraints", "cost"],
+            ["generation", "voltage"],
+            ["network", "network"],
+        ]
+    )
+
+    # Plot the violations at the best dispatch from each chain
+    sns.swarmplot(
+        data=[
+            result.P_gen_violation.sum(axis=-1),
+            result.Q_gen_violation.sum(axis=-1),
+            result.P_load_violation.sum(axis=-1),
+            result.Q_load_violation.sum(axis=-1),
+            result.V_violation.sum(axis=-1),
+            result.acopf_residual,
+        ],
+        ax=axs["constraints"],
+    )
+    axs["constraints"].set_xticklabels(["Pg", "Qg", "Pd", "Qd", "V", "ACOPF error"])
+    axs["constraints"].set_ylabel("Constraint Violation")
+
+    # Plot generation cost vs constraint violation
+    total_constraint_violation = (
+        result.P_gen_violation.sum(axis=-1)
+        + result.Q_gen_violation.sum(axis=-1)
+        + result.P_load_violation.sum(axis=-1)
+        + result.Q_load_violation.sum(axis=-1)
+        + result.V_violation.sum(axis=-1)
+    )
+    axs["cost"].scatter(result.generation_cost, total_constraint_violation)
+    axs["cost"].set_xlabel("Generation cost")
+    axs["cost"].set_ylabel("Total constraint violation")
+
+    # Plot the generations along with their limits
+    bus = sys.gen_spec.buses
+    P_min, P_max = sys.gen_spec.P_limits.T
+    for i in range(num_chains):
+        P = result.dispatch.gen.P[i, :]
+        lower_error = P - P_min
+        upper_error = P_max - P
+        errs = jnp.vstack((lower_error, upper_error))
+        axs["generation"].errorbar(
+            bus,
+            P,
+            yerr=errs,
+            linestyle="None",
+            marker="o",
+            markersize=10,
+            linewidth=3.0,
+            capsize=10.0,
+            capthick=3.0,
+        )
+    axs["generation"].set_ylabel("$P_g$ (p.u.)")
+
+    # Plot the voltages along with their limits
+    bus = jnp.arange(sys.n_bus)
+    V_min, V_max = sys.bus_voltage_limits.T
+    for i in range(num_chains):
+        V = result.voltage_amplitudes[i, :]
+        lower_error = V - V_min
+        upper_error = V_max - V
+        errs = jnp.vstack((lower_error, upper_error))
+        axs["voltage"].errorbar(
+            bus,
+            V,
+            yerr=errs,
+            linestyle="None",
+            marker="o",
+            markersize=10,
+            linewidth=3.0,
+            capsize=10.0,
+            capthick=3.0,
+        )
+    axs["voltage"].set_ylabel("$|V|$ (p.u.)")
+
+    # Plot the network states
+    line = jnp.arange(sys.n_line)
+    for i in range(num_chains):
+        line_states = result.network_state.line_states[i, :]
+        axs["network"].scatter(
+            line,
+            sigmoid(2 * line_states),
+            marker="o",
+            s=100 * total_constraint_violation[i] + 5,
+        )
+    axs["network"].set_ylabel("Line strength")
+    axs["network"].set_xticks(line)
+
+
 if __name__ == "__main__":
+    matplotlib.use("Agg")
+
     # Set up arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--case_name", type=str, nargs="?", default="case14")
     parser.add_argument("--L", type=float, nargs="?", default=100.0)
+    parser.add_argument("--failure_level", type=float, nargs="?", default=100.0)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
     parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-6)
     parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-2)
     parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
-    parser.add_argument("--num_mcmc_steps_per_round", type=int, nargs="?", default=10)
+    parser.add_argument("--num_mcmc_steps_per_round", type=int, nargs="?", default=50)
     parser.add_argument("--num_chains", type=int, nargs="?", default=10)
     parser.add_argument("--quench_rounds", type=int, nargs="?", default=10)
     parser.add_argument("--disable_gradients", action="store_true")
     parser.add_argument("--disable_stochasticity", action="store_true")
     parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=100)
     boolean_action = argparse.BooleanOptionalAction
+    parser.add_argument("--reinforce", action="store_true")
     parser.add_argument("--repair", action=boolean_action, default=True)
     parser.add_argument("--predict", action=boolean_action, default=True)
     parser.add_argument("--temper", action=boolean_action, default=False)
@@ -43,6 +147,7 @@ if __name__ == "__main__":
     # Hyperparameters
     case_name = args.case_name
     L = args.L
+    failure_level = args.failure_level
     dp_mcmc_step_size = args.dp_mcmc_step_size
     ep_mcmc_step_size = args.ep_mcmc_step_size
     num_rounds = args.num_rounds
@@ -50,6 +155,7 @@ if __name__ == "__main__":
     num_chains = args.num_chains
     use_gradients = not args.disable_gradients
     use_stochasticity = not args.disable_stochasticity
+    reinforce = args.reinforce
     repair = args.repair
     predict = args.predict
     temper = args.temper
@@ -59,6 +165,7 @@ if __name__ == "__main__":
     print(f"Running SC-ACOPF on {case_name} with hyperparameters:")
     print(f"\tcase_name = {case_name}")
     print(f"\tL = {L}")
+    print(f"\tfailure_level = {failure_level}")
     print(f"\tdp_mcmc_step_size = {dp_mcmc_step_size}")
     print(f"\tep_mcmc_step_size = {ep_mcmc_step_size}")
     print(f"\tnum_rounds = {num_rounds}")
@@ -72,7 +179,9 @@ if __name__ == "__main__":
     print(f"\tquench_rounds = {quench_rounds}")
     print(f"\tgrad_clip = {grad_clip}")
 
-    if use_gradients and use_stochasticity:
+    if reinforce:
+        alg_type = "reinforce"
+    elif use_gradients and use_stochasticity:
         alg_type = "mala"
     elif use_gradients and not use_stochasticity:
         alg_type = "gd"
@@ -83,7 +192,7 @@ if __name__ == "__main__":
 
     # Initialize logger
     wandb.init(
-        project=f"scopf-{case_name}-{num_rounds}x{num_mcmc_steps_per_round}",
+        project=f"tro-scopf-{case_name}",
         group=alg_type
         + ("-predict" if predict else "")
         + ("-repair" if repair else ""),
@@ -91,6 +200,8 @@ if __name__ == "__main__":
             "L": L,
             "case_name": case_name,
             "seed": args.seed,
+            "failure_level": failure_level,
+            "reinforce": reinforce,
             "dp_mcmc_step_size": dp_mcmc_step_size,
             "ep_mcmc_step_size": ep_mcmc_step_size,
             "num_rounds": num_rounds,
@@ -133,23 +244,34 @@ if __name__ == "__main__":
 
     # This sampler yields either MALA, GD, or RMH depending on whether gradients
     # and/or stochasticity are enabled
-    normalize_gradients = True
-    use_mh = True
-    init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
-        params,
-        logprob_fn,
-        normalize_gradients,
-        gradient_clip=grad_clip,
-    )
-    make_kernel_fn = lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-        logprob_fn,
-        step_size,
-        use_gradients,
-        stochasticity,
-        grad_clip,
-        normalize_gradients,
-        use_mh,
-    )
+    if reinforce:
+        init_sampler_fn = init_reinforce_sampler
+        noise_scale = 0.1
+        make_kernel_fn = lambda _1, logprob_fn, step_size, _2: make_reinforce_kernel(
+            logprob_fn,
+            step_size,
+            perturbation_stddev=noise_scale,
+            baseline_update_rate=0.5,
+        )
+    else:
+        # This sampler yields either MALA, GD, or RMH depending on whether gradients and/or
+        # stochasticity are enabled
+        init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
+            params,
+            logprob_fn,
+            True,  # TODO don't normalize gradients
+        )
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                True,  # TODO don't normalize gradients
+                True,  # use metroplis-hastings
+            )
+        )
 
     # Run the prediction+mitigation process
     t_start = time.perf_counter()
@@ -159,8 +281,12 @@ if __name__ == "__main__":
         init_exogenous_params,
         dp_logprior_fn=sys.dispatch_prior_logprob,
         ep_logprior_fn=sys.network_state_prior_logprob,
-        ep_potential_fn=lambda dp, ep: sys(dp, ep).potential,
-        dp_potential_fn=lambda dp, ep: -sys(dp, ep).potential,
+        ep_potential_fn=lambda dp, ep: -jax.nn.elu(
+            failure_level - sys(dp, ep).potential
+        ),
+        dp_potential_fn=lambda dp, ep: -jax.nn.elu(
+            sys(dp, ep).potential - failure_level
+        ),
         init_sampler=init_sampler_fn,
         make_kernel=make_kernel_fn,
         num_rounds=num_rounds,
@@ -174,6 +300,7 @@ if __name__ == "__main__":
         tempering_schedule=tempering_schedule,
         stress_test_cases=stress_test_eps,
         potential_fn=lambda dp, ep: sys(dp, ep).potential,
+        plotting_cb=plotting_cb,
     )
     t_end = time.perf_counter()
     print(

@@ -402,7 +402,7 @@ class ACOPF(eqx.Module):
         # Combine cost and violations to get the potential
         potential = (
             generation_cost
-            + self.constraint_penalty * total_violation
+            + self.constraint_penalty * jax.nn.sigmoid(10 * total_violation)
             # + acopf_residual  # Including this makes training unstable
         )
 

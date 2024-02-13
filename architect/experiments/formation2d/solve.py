@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
+import matplotlib
 import matplotlib.pyplot as plt
 from jax.config import config
 from jaxtyping import Array, Shaped
@@ -132,6 +133,8 @@ def plotting_cb(dp, eps):
 
 
 if __name__ == "__main__":
+    matplotlib.use("Agg")
+
     # Set up arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--savename", type=str, default="tro-formation")
