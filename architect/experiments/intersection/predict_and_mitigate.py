@@ -385,19 +385,19 @@ if __name__ == "__main__":
 
     quench_dps_only = False
     if reinforce:
-        alg_type = f"reinforce_l2c_0.05_step_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+        alg_type = "reinforce_l2c_0.05_step"
     elif use_gradients and use_stochasticity and use_mh and not zero_order_gradients:
-        alg_type = f"mala_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = "mala"
         quench_dps_only = True
     elif use_gradients and use_stochasticity and use_mh and zero_order_gradients:
-        alg_type = f"mala_zo_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = "mala_zo"
         quench_dps_only = True
     elif use_gradients and use_stochasticity and not use_mh:
-        alg_type = f"ula_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+        alg_type = "ula"
     elif use_gradients and not use_stochasticity:
-        alg_type = f"gd_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = "gd"
     elif not use_gradients and use_stochasticity and use_mh:
-        alg_type = f"rmh_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+        alg_type = "rmh"
     elif not use_gradients and use_stochasticity and not use_mh:
         alg_type = "random_walk"
     else:
