@@ -1,4 +1,5 @@
 """Code to predict and mitigate failure modes in the intersection scenario."""
+
 import argparse
 import json
 import os
@@ -13,10 +14,10 @@ import jax.tree_util as jtu
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
-import wandb
 from beartype.typing import NamedTuple
 from jaxtyping import Array, Float, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
 from architect.engines.reinforce import init_sampler as init_reinforce_sampler
 from architect.engines.reinforce import make_kernel as make_reinforce_kernel
@@ -34,7 +35,6 @@ from architect.experiments.intersection.train_intersection_agent_bc import (
 from architect.systems.highway.highway_env import HighwayObs, HighwayState
 from architect.systems.intersection.env import IntersectionEnv
 from architect.systems.intersection.policy import DrivingPolicy
-from architect.types import PRNGKeyArray
 from architect.utils import softmin
 
 # Type for non ego action trajectory
@@ -340,8 +340,8 @@ if __name__ == "__main__":
     parser.add_argument("--dp_logprior_scale", type=float, nargs="?", default=1.0)
     parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-3)
     parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-3)
-    parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
-    parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=1)
+    parser.add_argument("--num_rounds", type=int, nargs="?", default=5)
+    parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=10)
     parser.add_argument("--num_chains", type=int, nargs="?", default=10)
     parser.add_argument("--quench_rounds", type=int, nargs="?", default=0)
     parser.add_argument("--disable_gradients", action="store_true")
@@ -606,6 +606,7 @@ if __name__ == "__main__":
         ).potential,
         failure_level=failure_level,
         plotting_cb=plotting_cb,
+        test_every=5,
     )
     t_end = time.perf_counter()
     print(
