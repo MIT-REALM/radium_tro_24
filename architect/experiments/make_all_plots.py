@@ -96,8 +96,8 @@ if __name__ == "__main__":
     # Define metrics of interest
     metrics = [
         "Failure rate/test",
-        "Mean Cost/test",
         "Test Cost Percentiles/99.00",
+        "Mean Cost/test",
         "Predicted Cost Percentiles/99.00",
     ]
 

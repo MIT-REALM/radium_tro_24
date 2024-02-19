@@ -1,22 +1,19 @@
 """A script for analyzing the results of the repair experiments."""
+
 import json
 import os
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-import pyemd
-import scipy
-import seaborn as sns
 from jaxtyping import Array, Shaped
 from tqdm import tqdm
 
 from architect.experiments.highway.predict_and_mitigate import (
-    non_ego_actions_prior_logprob,
-    sample_non_ego_actions,
+    LinearTrajectory2D,
+    MultiAgentTrajectoryLinear,
+    sample_non_ego_trajectory,
     simulate,
 )
 from architect.experiments.highway.train_highway_agent import make_highway_env
@@ -31,24 +28,26 @@ REANALYZE = False
 lr = 1e-2
 lr = f"{lr:.1e}"
 # path to save summary data to in predict_repair folder
-SUMMARY_PATH = f"results/highway/predict_repair_1.0/stress_test_{lr}.json"
+SUMMARY_PATH = (
+    f"results/neurips_submission/highway/predict_repair_1.0/stress_test_{lr}.json"
+)
 # Define data sources from individual experiments
 SEEDS = [0, 1, 2, 3]
 DATA_SOURCES = {
     "mala_tempered": {
-        "path_prefix": f"results/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+01/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/mala_20tempered+0.1",
+        "path_prefix": f"results/neurips_submission/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+01/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/mala_20tempered+0.1",
         "display_name": "Ours (tempered)",
     },
     "rmh": {
-        "path_prefix": f"results/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+01/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/rmh",
+        "path_prefix": f"results/neurips_submission/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+01/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/rmh",
         "display_name": "ROCUS",
     },
     "gd": {
-        "path_prefix": f"results/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+00/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/gd",
+        "path_prefix": f"results/neurips_submission/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+00/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/gd",
         "display_name": "ML",
     },
     "reinforce": {
-        "path_prefix": f"results/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+00/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/reinforce_l2c",
+        "path_prefix": f"results/neurips_submission/highway/predict_repair_1.0/noise_5.0e-01/L_1.0e+00/25_samples/5_chains/0_quench/dp_{lr}/ep_{lr}/reinforce_l2c",
         "display_name": "L2C",
     },
 }
@@ -122,12 +121,24 @@ def monte_carlo_test(N, batches, loaded_data, alg, seed):
     ).potential
     cost_fn = jax.jit(cost_fn)
 
-    sample_fn = lambda key: sample_non_ego_actions(
-        key,
-        env,
-        horizon=loaded_data[alg][seed]["T"],
-        n_non_ego=2,
-        noise_scale=0.5,
+    # The nominal non-ego behavior is to drive straight
+    drive_straight = LinearTrajectory2D(
+        p=jnp.array(
+            [
+                [10.0, 0.0],
+                [20.0, 0.0],
+                [30.0, 0.0],
+                [40.0, 0.0],
+                [50.0, 0.0],
+            ]
+        )
+    )
+    nominal_trajectory = MultiAgentTrajectoryLinear(
+        trajectories=[drive_straight, drive_straight]
+    )
+
+    sample_fn = lambda key: sample_non_ego_trajectory(
+        key, nominal_trajectory, noise_scale
     )
 
     # Sample N environmental parameters at random
@@ -172,9 +183,9 @@ if __name__ == "__main__":
             json.dump(
                 summary_data,
                 f,
-                default=lambda x: x.tolist()
-                if isinstance(x, Shaped[Array, "..."])
-                else x,
+                default=lambda x: (
+                    x.tolist() if isinstance(x, Shaped[Array, "..."]) else x
+                ),
             )
     else:
         # Load the data
