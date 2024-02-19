@@ -401,15 +401,15 @@ if __name__ == "__main__":
     parser.add_argument("--image_h", type=int, nargs="?", default=32)
     parser.add_argument("--noise_scale", type=float, nargs="?", default=1.0)
     parser.add_argument("--failure_level", type=int, nargs="?", default=7.5)
-    parser.add_argument("--T", type=int, nargs="?", default=60)
+    parser.add_argument("--T", type=int, nargs="?", default=50)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
-    parser.add_argument("--L", type=float, nargs="?", default=1.0)
+    parser.add_argument("--L", type=float, nargs="?", default=5.0)
     parser.add_argument("--dp_logprior_scale", type=float, nargs="?", default=1.0)
-    parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-4)
-    parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-4)
-    parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
+    parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-2)
+    parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-5)
+    parser.add_argument("--num_rounds", type=int, nargs="?", default=10)
     parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=10)
-    parser.add_argument("--num_chains", type=int, nargs="?", default=10)
+    parser.add_argument("--num_chains", type=int, nargs="?", default=5)
     parser.add_argument("--quench_rounds", type=int, nargs="?", default=0)
     parser.add_argument("--disable_gradients", action="store_true")
     parser.add_argument("--disable_stochasticity", action="store_true")
@@ -456,21 +456,21 @@ if __name__ == "__main__":
 
     quench_dps_only = False
     if reinforce:
-        alg_type = f"reinforce_l2c_0.05_step_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+        alg_type = "reinforce_l2c_0.05_step"
     elif hmc:
-        alg_type = f"hmc_steps_{num_hmc_integration_steps}_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = f"hmc_steps_{num_hmc_integration_steps}"
     elif use_gradients and use_stochasticity and use_mh and not zero_order_gradients:
-        alg_type = f"mala_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = "mala"
         quench_dps_only = True
     elif use_gradients and use_stochasticity and use_mh and zero_order_gradients:
-        alg_type = f"mala_zo_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = "mala_zo"
         quench_dps_only = True
     elif use_gradients and use_stochasticity and not use_mh:
-        alg_type = f"ula_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+        alg_type = "ula"
     elif use_gradients and not use_stochasticity:
-        alg_type = f"gd_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        alg_type = "gd"
     elif not use_gradients and use_stochasticity and use_mh:
-        alg_type = f"rmh_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+        alg_type = "rmh"
     elif not use_gradients and use_stochasticity and not use_mh:
         alg_type = "random_walk"
     else:
@@ -478,13 +478,10 @@ if __name__ == "__main__":
 
     # Initialize logger
     wandb.init(
-        project=(
-            args.savename
-            + ("-predict" if predict else "")
-            + ("-repair" if repair else "")
-            + f"-noise_{noise_scale:.2}"
-        ),
-        group=alg_type,
+        project=args.savename,
+        group=alg_type
+        + ("-predict" if predict else "")
+        + ("-repair" if repair else ""),
         config={
             "L": L,
             "noise_scale": noise_scale,
@@ -679,6 +676,7 @@ if __name__ == "__main__":
         ).potential,
         failure_level=failure_level,
         plotting_cb=plotting_cb,
+        test_every=num_rounds,
     )
     t_end = time.perf_counter()
     print(
