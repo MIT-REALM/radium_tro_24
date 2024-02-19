@@ -3,7 +3,7 @@
 import jax
 import jax.numpy as jnp
 from beartype import beartype
-from jax.nn import logsumexp
+from jax.nn import logsumexp, softplus
 from jaxtyping import Array, Float, jaxtyped
 
 
@@ -17,6 +17,16 @@ def softmax(x: Float[Array, "..."], sharpness: float = 0.05):
 def softmin(x: Float[Array, "..."], sharpness: float = 0.05):
     """Return the soft minimum of the given vector"""
     return -softmax(-x, sharpness)
+
+
+@jaxtyped(typechecker=beartype)
+def softclip(x: Float[Array, "..."], a: float, sharpness: float = 10.0):
+    """Return the vector clipped elementwise to the range [-a, a]"""
+    return (
+        x
+        - softplus(sharpness * (x - a)) / sharpness
+        + softplus(sharpness * (-a - x)) / sharpness
+    )
 
 
 @jax.custom_vjp

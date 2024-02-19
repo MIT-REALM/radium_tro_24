@@ -58,51 +58,51 @@ def plotting_cb(dp, eps):
         + result.Q_load_violation.sum(axis=-1)
         + result.V_violation.sum(axis=-1)
     )
-    axs["cost"].scatter(result.generation_cost, total_constraint_violation)
-    axs["cost"].set_xlabel("Generation cost")
+    axs["cost"].scatter(result.potential, total_constraint_violation)
+    axs["cost"].set_xlabel("potential")
     axs["cost"].set_ylabel("Total constraint violation")
 
-    # Plot the generations along with their limits
-    bus = sys.gen_spec.buses
-    P_min, P_max = sys.gen_spec.P_limits.T
-    for i in range(num_chains):
-        P = result.dispatch.gen.P[i, :]
-        lower_error = P - P_min
-        upper_error = P_max - P
-        errs = jnp.vstack((lower_error, upper_error))
-        axs["generation"].errorbar(
-            bus,
-            P,
-            yerr=errs,
-            linestyle="None",
-            marker="o",
-            markersize=10,
-            linewidth=3.0,
-            capsize=10.0,
-            capthick=3.0,
-        )
-    axs["generation"].set_ylabel("$P_g$ (p.u.)")
+    # # Plot the generations along with their limits
+    # bus = sys.gen_spec.buses
+    # P_min, P_max = sys.gen_spec.P_limits.T
+    # for i in range(num_chains):
+    #     P = result.dispatch.gen.P[i, :]
+    #     lower_error = P - P_min
+    #     upper_error = P_max - P
+    #     errs = jnp.vstack((lower_error, upper_error))
+    #     axs["generation"].errorbar(
+    #         bus,
+    #         P,
+    #         yerr=errs,
+    #         linestyle="None",
+    #         marker="o",
+    #         markersize=10,
+    #         linewidth=3.0,
+    #         capsize=10.0,
+    #         capthick=3.0,
+    #     )
+    # axs["generation"].set_ylabel("$P_g$ (p.u.)")
 
-    # Plot the voltages along with their limits
-    bus = jnp.arange(sys.n_bus)
-    V_min, V_max = sys.bus_voltage_limits.T
-    for i in range(num_chains):
-        V = result.voltage_amplitudes[i, :]
-        lower_error = V - V_min
-        upper_error = V_max - V
-        errs = jnp.vstack((lower_error, upper_error))
-        axs["voltage"].errorbar(
-            bus,
-            V,
-            yerr=errs,
-            linestyle="None",
-            marker="o",
-            markersize=10,
-            linewidth=3.0,
-            capsize=10.0,
-            capthick=3.0,
-        )
-    axs["voltage"].set_ylabel("$|V|$ (p.u.)")
+    # # Plot the voltages along with their limits
+    # bus = jnp.arange(sys.n_bus)
+    # V_min, V_max = sys.bus_voltage_limits.T
+    # for i in range(num_chains):
+    #     V = result.voltage_amplitudes[i, :]
+    #     lower_error = V - V_min
+    #     upper_error = V_max - V
+    #     errs = jnp.vstack((lower_error, upper_error))
+    #     axs["voltage"].errorbar(
+    #         bus,
+    #         V,
+    #         yerr=errs,
+    #         linestyle="None",
+    #         marker="o",
+    #         markersize=10,
+    #         linewidth=3.0,
+    #         capsize=10.0,
+    #         capthick=3.0,
+    #     )
+    # axs["voltage"].set_ylabel("$|V|$ (p.u.)")
 
     # Plot the network states
     line = jnp.arange(sys.n_line)
@@ -117,6 +117,12 @@ def plotting_cb(dp, eps):
     axs["network"].set_ylabel("Line strength")
     axs["network"].set_xticks(line)
 
+    # log the figure to wandb
+    wandb.log({"plot": wandb.Image(fig)}, commit=False)
+
+    # Close the figure
+    plt.close()
+
 
 if __name__ == "__main__":
     matplotlib.use("Agg")
@@ -125,23 +131,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--case_name", type=str, nargs="?", default="case14")
     parser.add_argument("--L", type=float, nargs="?", default=100.0)
-    parser.add_argument("--failure_level", type=float, nargs="?", default=100.0)
+    parser.add_argument("--failure_level", type=float, nargs="?", default=4.0)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
     parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-6)
     parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-2)
     parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
-    parser.add_argument("--num_mcmc_steps_per_round", type=int, nargs="?", default=50)
+    parser.add_argument("--num_mcmc_steps_per_round", type=int, nargs="?", default=10)
     parser.add_argument("--num_chains", type=int, nargs="?", default=10)
-    parser.add_argument("--quench_rounds", type=int, nargs="?", default=10)
+    parser.add_argument("--quench_rounds", type=int, nargs="?", default=20)
     parser.add_argument("--disable_gradients", action="store_true")
     parser.add_argument("--disable_stochasticity", action="store_true")
-    parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=100)
+    parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=1000)
     boolean_action = argparse.BooleanOptionalAction
     parser.add_argument("--reinforce", action="store_true")
     parser.add_argument("--repair", action=boolean_action, default=True)
     parser.add_argument("--predict", action=boolean_action, default=True)
     parser.add_argument("--temper", action=boolean_action, default=False)
-    parser.add_argument("--grad_clip", type=float, nargs="?", default=1e4)
+    parser.add_argument("--grad_clip", type=float, nargs="?", default=float("inf"))
     args = parser.parse_args()
 
     # Hyperparameters
@@ -192,7 +198,7 @@ if __name__ == "__main__":
 
     # Initialize logger
     wandb.init(
-        project=f"tro-scopf-{case_name}",
+        project=f"tro2-scopf-{case_name}",
         group=alg_type
         + ("-predict" if predict else "")
         + ("-repair" if repair else ""),
@@ -219,7 +225,7 @@ if __name__ == "__main__":
 
     # Add exponential tempering if using
     t = jnp.linspace(0, 1, num_rounds)
-    tempering_schedule = 1 - jnp.exp(-5 * t) if temper else None
+    tempering_schedule = 1 - jnp.exp(-10 * t) if temper else None
 
     # Load the test case
     sys = load_test_network(case_name, penalty=L)
@@ -287,6 +293,8 @@ if __name__ == "__main__":
         dp_potential_fn=lambda dp, ep: -jax.nn.elu(
             sys(dp, ep).potential - failure_level
         ),
+        # ep_potential_fn=lambda dp, ep: -(failure_level - sys(dp, ep).potential),
+        # dp_potential_fn=lambda dp, ep: -(sys(dp, ep).potential - failure_level),
         init_sampler=init_sampler_fn,
         make_kernel=make_kernel_fn,
         num_rounds=num_rounds,
@@ -301,6 +309,8 @@ if __name__ == "__main__":
         stress_test_cases=stress_test_eps,
         potential_fn=lambda dp, ep: sys(dp, ep).potential,
         plotting_cb=plotting_cb,
+        quench_dps_only=True,
+        failure_level=failure_level,
     )
     t_end = time.perf_counter()
     print(

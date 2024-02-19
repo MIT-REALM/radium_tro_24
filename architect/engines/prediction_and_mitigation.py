@@ -320,6 +320,11 @@ def predict_and_mitigate_failure_modes(
     log_dict["Max Cost/predicted"] = predicted_costs.max()
     log_dict["Std Cost/predicted"] = predicted_costs.std()
     log_dict["Failure rate/predicted"] = (predicted_costs > failure_level).mean()
+    qs = jnp.array([25, 50, 75, 90, 95, 99, 99.9, 100])
+    percentiles = jnp.nanpercentile(predicted_costs, qs)
+    log_dict = log_dict | {
+        f"Predicted Cost Percentiles/{q:.2f}": cost for q, cost in zip(qs, percentiles)
+    }
 
     if stress_test_cases is not None:
         # Stress test current best DP
@@ -331,6 +336,11 @@ def predict_and_mitigate_failure_modes(
             "Max Cost/test": stress_test_costs.max(),
             "Std Cost/test": stress_test_costs.std(),
             "Failure rate/test": (stress_test_costs > failure_level).mean(),
+        }
+
+        percentiles = jnp.nanpercentile(stress_test_costs, qs)
+        log_dict = log_dict | {
+            f"Test Cost Percentiles/{q:.2f}": cost for q, cost in zip(qs, percentiles)
         }
 
     if plotting_cb is not None:
@@ -387,6 +397,11 @@ def predict_and_mitigate_failure_modes(
                 "Std Cost/test": stress_test_costs.std(),
                 "Failure rate/test": (stress_test_costs > failure_level).mean(),
             }
+            percentiles = jnp.nanpercentile(stress_test_costs, qs)
+            log_dict = log_dict | {
+                f"Test Cost Percentiles/{q:.2f}": cost
+                for q, cost in zip(qs, percentiles)
+            }
 
         # Log the failure rate on the predicted test cases
         predicted_costs = stress_test_dps(current_best_dps, current_eps)
@@ -395,6 +410,11 @@ def predict_and_mitigate_failure_modes(
         log_dict["Max Cost/predicted"] = predicted_costs.max()
         log_dict["Std Cost/predicted"] = predicted_costs.std()
         log_dict["Failure rate/predicted"] = (predicted_costs > failure_level).mean()
+        percentiles = jnp.nanpercentile(predicted_costs, qs)
+        log_dict = log_dict | {
+            f"Predicted Cost Percentiles/{q:.2f}": cost
+            for q, cost in zip(qs, percentiles)
+        }
 
         if plotting_cb is not None and (i == num_rounds - 1 or i % test_every == 0):
             plotting_cb(current_best_dps, current_eps)

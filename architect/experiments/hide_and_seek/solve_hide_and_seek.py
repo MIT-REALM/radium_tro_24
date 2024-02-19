@@ -194,7 +194,7 @@ if __name__ == "__main__":
 
     # Initialize logger
     wandb.init(
-        project=f"tro-hideseek2-{n_hiders}-hiders-{n_seekers}-seekers",
+        project=f"tro2-hideseek2-{n_hiders}-hiders-{n_seekers}-seekers-clipped",
         group=alg_type
         + ("-predict" if predict else "")
         + ("-repair" if repair else ""),
@@ -247,6 +247,8 @@ if __name__ == "__main__":
         seeker_max_speed=(width + height) / duration,
         hider_max_speed=(width + height) / duration,
         b=100.0,
+        width=width,
+        height=height,
     )
 
     # Make a PRNG key (#sorandom)
@@ -347,6 +349,10 @@ if __name__ == "__main__":
         * jax.nn.elu(failure_level - game(dp, ep[0], ep[1]).potential),
         dp_potential_fn=lambda dp, ep: -L
         * jax.nn.elu(game(dp, ep[0], ep[1]).potential - failure_level),
+        # ep_potential_fn=lambda dp, ep: -L
+        # * (failure_level - game(dp, ep[0], ep[1]).potential),
+        # dp_potential_fn=lambda dp, ep: -L
+        # * (game(dp, ep[0], ep[1]).potential - failure_level),
         init_sampler=init_sampler_fn,
         make_kernel=make_kernel_fn,
         num_rounds=num_rounds,

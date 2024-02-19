@@ -9,6 +9,7 @@ from architect.systems.hide_and_seek.hide_and_seek_types import (
     HideAndSeekResult,
     MultiAgentTrajectory,
 )
+from architect.utils import softclip
 
 
 @jax.jit
@@ -51,6 +52,9 @@ class Game(eqx.Module):
 
     b: float = 100
 
+    width: float = 3.0
+    height: float = 2.0
+
     def softmin(self, x: Float[Array, "..."]) -> Float[Array, ""]:
         return -1 / self.b * logsumexp(-self.b * x)
 
@@ -82,6 +86,20 @@ class Game(eqx.Module):
             hider_target = hider_trajectory(t / self.duration)
             seeker_disturbance = seeker_disturbance_trace(t / self.duration)
             seeker_disturbance = jax.nn.tanh(seeker_disturbance) * max_disturbance
+
+            # Clamp the targets to be inside the arena (soft clip)
+            seeker_target = seeker_target.at[:, 0].set(
+                softclip(seeker_target[:, 0], self.width / 2.0)
+            )
+            seeker_target = seeker_target.at[:, 1].set(
+                softclip(seeker_target[:, 1], self.height / 2.0)
+            )
+            hider_target = hider_target.at[:, 0].set(
+                softclip(hider_target[:, 0], self.width / 2.0)
+            )
+            hider_target = hider_target.at[:, 1].set(
+                softclip(hider_target[:, 1], self.height / 2.0)
+            )
 
             # Steer towards these targets (clip with max speeds)
             v_seeker = seeker_target - current_seeker_positions

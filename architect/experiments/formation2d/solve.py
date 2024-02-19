@@ -20,12 +20,16 @@ from architect.engines.reinforce import make_kernel as make_reinforce_kernel
 from architect.engines.samplers import init_sampler as init_mcmc_sampler
 from architect.engines.samplers import make_kernel as make_mcmc_kernel
 from architect.systems.formation2d.simulator import (
-    WindField,
+    KernelWindField,
     connection_strength_prior_logprob,
     sample_random_connection_strengths,
     simulate,
 )
-from architect.systems.hide_and_seek.hide_and_seek_types import Arena
+from architect.systems.hide_and_seek.hide_and_seek_types import (
+    Arena,
+    MultiAgentTrajectory,
+    Trajectory2D,
+)
 
 config.update("jax_debug_nans", True)
 
@@ -72,6 +76,17 @@ def plotting_cb(dp, eps):
         axs["arena"].plot(pts[:, 0], pts[:, 1], "r-")
         axs["arena"].scatter(traj.p[:, 0], traj.p[:, 1], s=25, color="r", marker="x")
 
+    # Plot each agent's trajectory
+    for chain in range(num_chains):
+        for i in range(n):
+            axs["arena"].plot(
+                result.positions[chain, :, i, 0],
+                result.positions[chain, :, i, 1],
+                "k-",
+                linewidth=1,
+                alpha=0.2,
+            )
+
     # Plot endpoints for each trajectory
     axs["arena"].scatter(
         result.positions[:, -1, :, 0],
@@ -84,20 +99,6 @@ def plotting_cb(dp, eps):
     axs["arena"].scatter(
         goal_com_position[0], goal_com_position[1], s=50, color="g", marker="*"
     )
-    # for i in range(initial_states.shape[0]):
-    #     max_U = result.potential.max()
-    #     min_U = result.potential.min()
-    #     for j in range(num_chains):
-    #         # Make higher-potenial trajectories less transparent
-    #         potential = result.potential[j]
-    #         alpha = 0.3 + 0.7 * ((potential - min_U) / (1e-3 + max_U - min_U)).item()
-    #         axs["arena"].plot(
-    #             result.positions[j, :, i, 0],
-    #             result.positions[j, :, i, 1],
-    #             "r-",
-    #             linewidth=1,
-    #             alpha=alpha,
-    #         )
 
     # Plot the worst wind speeds
     worst_wind = jax.tree_util.tree_map(lambda leaf: leaf[worst_eps_idx], eps[0])
@@ -137,7 +138,9 @@ if __name__ == "__main__":
 
     # Set up arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--savename", type=str, default="tro-formation")
+    parser.add_argument(
+        "--savename", type=str, default="tro2-formation-collision-halfkernel"
+    )
     parser.add_argument("--n", type=int, nargs="?", default=5)
     parser.add_argument("--L", type=float, nargs="?", default=1.0)
     parser.add_argument("--T", type=int, nargs="?", default=3)
@@ -251,6 +254,7 @@ if __name__ == "__main__":
             "quench_rounds": quench_rounds,
             "grad_clip": grad_clip,
             "num_stress_test_cases": num_stress_test_cases,
+            "max_wind_thrust": max_wind_thrust,
         },
     )
 
@@ -259,7 +263,7 @@ if __name__ == "__main__":
     tempering_schedule = 1 - jnp.exp(-5 * t) if temper else None
 
     # Set up the simulation
-    arena = Arena(width, height, R)
+    arena = Arena(width, height, 0.0)
     initial_states = jnp.stack(
         (
             jnp.zeros(n) - width / 2.0 + R,
@@ -285,19 +289,33 @@ if __name__ == "__main__":
     # Make a PRNG key (#sorandom)
     prng_key = jrandom.PRNGKey(args.seed)
 
-    # Initialize the trajectories randomly (these will be the DPs)
+    # # Initialize the trajectories randomly (these will be the DPs)
+    # prng_key, traj_key = jrandom.split(prng_key)
+    # traj_keys = jrandom.split(traj_key, num_chains)
+    # init_robot_trajectories = jax.vmap(
+    #     lambda key: arena.sample_random_multi_trajectory(
+    #         key, initial_states[:, :2], T=T, fixed=False
+    #     )
+    # )(traj_keys)
+
+    # Initialize trajectories to be straight lines plus some small noise
     prng_key, traj_key = jrandom.split(prng_key)
-    traj_keys = jrandom.split(traj_key, num_chains)
+
+    waypoints = initial_states[:, :2]
+    waypoints = waypoints[:, None, :] + jnp.zeros((n, T, 2))  # add time dimension
+    waypoints = (
+        jax.random.normal(traj_key, (num_chains, *waypoints.shape)) * 0.1
+        + waypoints[None, :, :, :]
+    )  # Add chain dimension
+    waypoints = waypoints.at[:, :, :, 0].add(jnp.linspace(0, width - 2 * R, T))
     init_robot_trajectories = jax.vmap(
-        lambda key: arena.sample_random_multi_trajectory(
-            key, initial_states[:, :2], T=T, fixed=False
-        )
-    )(traj_keys)
+        lambda w: MultiAgentTrajectory([Trajectory2D(p) for p in w])
+    )(waypoints)
 
     # Initialize the wind field randomly
     prng_key, wind_key = jrandom.split(prng_key)
     wind_keys = jrandom.split(wind_key, num_chains)
-    wind = jax.vmap(WindField)(wind_keys)
+    wind = jax.vmap(KernelWindField)(wind_keys)
 
     # Initialize the connection strengths
     prng_key, conn_key = jrandom.split(prng_key)
@@ -307,7 +325,7 @@ if __name__ == "__main__":
     # Make stress test eps
     prng_key, wind_key = jrandom.split(prng_key)
     wind_keys = jrandom.split(wind_key, num_stress_test_cases)
-    wind_stress_test = jax.vmap(WindField)(wind_keys)
+    wind_stress_test = jax.vmap(KernelWindField)(wind_keys)
 
     # Initialize the connection strengths
     prng_key, conn_key = jrandom.split(prng_key)
@@ -326,9 +344,12 @@ if __name__ == "__main__":
     )
 
     def wind_logprior(wind):
-        wind_speeds = jax.vmap(jax.vmap(wind))(jnp.stack([test_X, test_Y], axis=-1))
-        mean_wind_speed = jnp.mean(wind_speeds)
-        return jax.scipy.stats.norm.logpdf(mean_wind_speed, 0.0, 1.0)
+        # For kernel wind field
+        return jax.scipy.stats.norm.logpdf(wind.wind_kernels, 0.0, 1.0).sum()
+        # For MLP wind field
+        # wind_speeds = jax.vmap(jax.vmap(wind))(jnp.stack([test_X, test_Y], axis=-1))
+        # mean_wind_speed = jnp.mean(wind_speeds)
+        # return jax.scipy.stats.norm.logpdf(mean_wind_speed, 0.0, 1.0)
 
     def overall_logprior(ep):
         wind = ep[0]
@@ -391,6 +412,10 @@ if __name__ == "__main__":
         * jax.nn.elu(failure_level - simulate_fn(dp, ep).potential),
         dp_potential_fn=lambda dp, ep: -L
         * jax.nn.elu(simulate_fn(dp, ep).potential - failure_level),
+        # ep_potential_fn=lambda dp, ep: -L
+        # * (failure_level - simulate_fn(dp, ep).potential),
+        # dp_potential_fn=lambda dp, ep: -L
+        # * (simulate_fn(dp, ep).potential - failure_level),
         init_sampler=init_sampler_fn,
         make_kernel=make_kernel_fn,
         num_rounds=num_rounds,
@@ -407,7 +432,7 @@ if __name__ == "__main__":
         failure_level=failure_level,
         potential_fn=lambda dp, ep: simulate_fn(dp, ep).potential,
         plotting_cb=plotting_cb,
-        test_every=10,
+        # test_every=10,
     )
     t_end = time.perf_counter()
     print(
