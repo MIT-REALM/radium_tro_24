@@ -405,13 +405,10 @@ if __name__ == "__main__":
 
     # Initialize logger
     wandb.init(
-        project=(
-            args.savename
-            + ("-predict" if predict else "")
-            + ("-repair" if repair else "")
-            + f"-{num_rounds}x{num_steps_per_round}"
-        ),
-        group=alg_type,
+        project=args.savename,
+        group=alg_type
+        + ("-predict" if predict else "")
+        + ("-repair" if repair else ""),
         config={
             "L": L,
             "noise_scale": noise_scale,
