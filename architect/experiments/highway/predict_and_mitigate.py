@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
@@ -393,6 +394,8 @@ def plotting_cb(dp, eps, T=60):
 
 
 if __name__ == "__main__":
+    matplotlib.use("Agg")
+
     # Set up arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
