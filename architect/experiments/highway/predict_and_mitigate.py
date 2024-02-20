@@ -676,7 +676,7 @@ if __name__ == "__main__":
         ).potential,
         failure_level=failure_level,
         plotting_cb=plotting_cb,
-        test_every=num_rounds,
+        test_every=5,
     )
     t_end = time.perf_counter()
     print(
