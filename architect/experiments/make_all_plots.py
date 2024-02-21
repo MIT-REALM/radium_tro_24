@@ -1,3 +1,5 @@
+import re
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -18,6 +20,10 @@ if __name__ == "__main__":
         [
             "tro2-hideseek2-5-hiders-3-seekers-clipped",
             "tro2-hideseek2-20-hiders-12-seekers",
+        ],
+        [
+            "tro4-highway",
+            "tro4-intersection",
         ],
     ]
     projects_unwrapped = [project for sublist in project_list for project in sublist]
@@ -71,6 +77,8 @@ if __name__ == "__main__":
         },
         "tro2-hideseek2-5-hiders-3-seekers-clipped": {},
         "tro2-hideseek2-20-hiders-12-seekers": {},
+        "tro4-highway": {},
+        "tro4-intersection": {},
     }
 
     # Define a display name for each project
@@ -81,6 +89,22 @@ if __name__ == "__main__":
         "tro2-formation-collision-halfkernel-10-agents": "Formation 10",
         "tro2-hideseek2-5-hiders-3-seekers-clipped": "Search 3v5",
         "tro2-hideseek2-20-hiders-12-seekers": "Search 12v20",
+        "tro4-highway": "AV (highway)",
+        "tro4-intersection": "AV (intersection)",
+    }
+
+    # Define cost y limits for each project
+    max_cost_y_limits = {
+        "Grid": ("log", (5e-4, 1.5)),
+        "Formation": ("linear", (0.0, 1.1)),
+        "Search": ("linear", (0.0, 1.1)),
+        "AV": ("linear", (0.0, 1.1)),
+    }
+    mean_cost_y_limits = {
+        "Grid": ("log", (5e-4, 1.5)),
+        "Formation": ("linear", (0.0, 0.2)),
+        "Search": ("linear", (0.0, 0.4)),
+        "AV": ("linear", (0.0, 1.1)),
     }
 
     # Define groups and diplay names
@@ -92,6 +116,7 @@ if __name__ == "__main__":
         "mala-predict-repair": "R1",
     }
     groups = list(group_display_names.keys())
+    n_groups = len(groups)
 
     # Define metrics of interest
     metrics = [
@@ -113,13 +138,22 @@ if __name__ == "__main__":
         # Get all runs for the current project
         runs = api.runs(project, filters=filters[project], per_page=100)
 
-        if len(runs) != len(groups) * 4:  # Standard number of seeds
+        if len(runs) != n_groups * 4:  # Standard number of seeds
             print(
                 f"WARN: {project} has {len(runs)} runs, do you have the right filters?"
             )
 
         # Extract summary statistics for each run
         for run in runs:
+            # If there is no exact match for group, match on the first word
+            if run.group not in groups:
+                run.group = re.split("-|_", run.group)[0]
+
+                for group in groups:
+                    if run.group in group:
+                        run.group = group
+                        break
+
             summary_stats.append(
                 {
                     "project": project_display_names[project],
@@ -130,14 +164,39 @@ if __name__ == "__main__":
 
     stats_df = pd.DataFrame(summary_stats)
 
-    # Compute some summary statistics
-    stats_df["Predicted Cost Percentiles/99.00 (normalized)"] = (
-        stats_df["Predicted Cost Percentiles/99.00"]
-        / stats_df["Test Cost Percentiles/99.00"]
+    # Normalize all costs by the maximum test cost
+    max_test_cost = stats_df.groupby("project")["Test Cost Percentiles/99.00"].max()
+    min_test_cost = stats_df.groupby("project")["Mean Cost/test"].min()
+    min_test_cost = min_test_cost - 0.1 * min_test_cost.abs()  # Add a small buffer
+    stats_df["Test Cost Percentiles/99.00"] = stats_df.apply(
+        lambda row: (row["Test Cost Percentiles/99.00"] - min_test_cost[row["project"]])
+        / (max_test_cost[row["project"]] - min_test_cost[row["project"]]),
+        axis=1,
     )
+    stats_df["Mean Cost/test"] = stats_df.apply(
+        lambda row: (row["Mean Cost/test"] - min_test_cost[row["project"]])
+        / (max_test_cost[row["project"]] - min_test_cost[row["project"]]),
+        axis=1,
+    )
+    stats_df["Predicted Cost Percentiles/99.00"] = stats_df.apply(
+        lambda row: (
+            row["Predicted Cost Percentiles/99.00"] - min_test_cost[row["project"]]
+        )
+        / (max_test_cost[row["project"]] - min_test_cost[row["project"]]),
+        axis=1,
+    )
+
+    # # Compute some summary statistics
+    # stats_df["Predicted Cost Percentiles/99.00 (normalized)"] = (
+    #     stats_df["Predicted Cost Percentiles/99.00"]
+    #     / stats_df["Test Cost Percentiles/99.00"]
+    # )
 
     # Remove the un-normalized predicted cost
     stats_df = stats_df.drop(columns=["Predicted Cost Percentiles/99.00"])
+
+    # Replace zero test failure rates with 10^-3
+    stats_df["Failure rate/test"] = stats_df["Failure rate/test"].replace(0, 1e-3)
 
     # Melt the dataframe for use with seaborn
     stats_df = stats_df.melt(
@@ -174,23 +233,57 @@ if __name__ == "__main__":
     #     title=None,
     # )
 
-    # Make costs for grid projects log scale
-    grid_indices = [
-        i for i, project in enumerate(stats_df["project"].unique()) if "Grid" in project
-    ]
-    for i in grid_indices:
-        for ax in g.axes[:, i]:
-            ax.set_yscale("log")
+    # Make all plots log scale
+    for row in g.axes:
+        for ax in row[:-1]:  # TODO log scale all plots
+            ax.set_yscale("log", nonpositive="clip")
 
-    # Add a black line at 0 for the normalized predicted cost
-    pred_cost_indices = [
+    # Set failure rate plots to a consistent scale
+    fail_indices = [
         i
         for i, metric in enumerate(stats_df["metric"].unique())
-        if "Predicted" in metric
+        if "Failure rate" in metric
     ]
-    for i in pred_cost_indices:
-        for ax in g.axes[i, :]:
-            ax.axhline(1, color="black", linestyle="--")
+    for i in fail_indices:
+        for ax in g.axes[i, :-1]:  # TODO log scale all plots
+            ax.set_ylim(5e-4, 1.5)
+
+    # Set consistent cost scale for projects in the same domain
+    cost_row_indices = [
+        i
+        for i, metric in enumerate(stats_df["metric"].unique())
+        if "Percentile" in metric
+    ]
+    for i in cost_row_indices:
+        for ax in g.axes[i, :-1]:
+            title = ax.get_title()
+            for domain, (scale, limits) in max_cost_y_limits.items():
+                if domain in title:
+                    ax.set_yscale(scale)
+                    ax.set_ylim(*limits)
+
+    cost_row_indices = [
+        i
+        for i, metric in enumerate(stats_df["metric"].unique())
+        if "Mean Cost" in metric
+    ]
+    for i in cost_row_indices:
+        for ax in g.axes[i, :-1]:
+            title = ax.get_title()
+            for domain, (scale, limits) in mean_cost_y_limits.items():
+                if domain in title:
+                    ax.set_yscale(scale)
+                    ax.set_ylim(*limits)
+
+    # # Add a black line at 0 for the normalized predicted cost
+    # pred_cost_indices = [
+    #     i
+    #     for i, metric in enumerate(stats_df["metric"].unique())
+    #     if "Predicted" in metric
+    # ]
+    # for i in pred_cost_indices:
+    #     for ax in g.axes[i, :]:
+    #         ax.axhline(1, color="black", linestyle="--")
 
     # Label y axes
     for ax, metric_name in zip(g.axes[:, 0], stats_df["metric"].unique()):
