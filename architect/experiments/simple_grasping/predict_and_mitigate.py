@@ -1,4 +1,5 @@
 """Code to predict and mitigate failure modes in the grasping scenario."""
+
 import argparse
 import json
 import os
@@ -11,10 +12,10 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
 import matplotlib.pyplot as plt
-import wandb
 from beartype.typing import NamedTuple
 from jaxtyping import Array, Float, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
 from architect.engines.reinforce import init_sampler as init_reinforce_sampler
 from architect.engines.reinforce import make_kernel as make_reinforce_kernel
@@ -28,7 +29,6 @@ from architect.systems.simple_grasping.env import (
 )
 from architect.systems.simple_grasping.policy import AffordancePredictor
 from architect.types import PRNGKeyArray
-from architect.utils import softmin
 
 
 class SimulationResults(NamedTuple):
@@ -447,6 +447,7 @@ if __name__ == "__main__":
             params,
             logprob_fn,
             normalize_gradients,
+            grad_clip,
         )
         make_kernel_fn = (
             lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(

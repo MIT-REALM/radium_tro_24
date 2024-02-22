@@ -387,6 +387,7 @@ if __name__ == "__main__":
             params,
             logprob_fn,
             True,  # TODO don't normalize gradients
+            grad_clip,
         )
         make_kernel_fn = (
             lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(

@@ -198,7 +198,7 @@ if __name__ == "__main__":
 
     # Initialize logger
     wandb.init(
-        project=f"tro2-scopf-{case_name}",
+        project=f"tro3-scopf-{case_name}",
         group=alg_type
         + ("-predict" if predict else "")
         + ("-repair" if repair else ""),
@@ -266,6 +266,7 @@ if __name__ == "__main__":
             params,
             logprob_fn,
             True,  # TODO don't normalize gradients
+            grad_clip,
         )
         make_kernel_fn = (
             lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
@@ -279,6 +280,18 @@ if __name__ == "__main__":
             )
         )
 
+    # Adjust scaling based on the dimension of the dps and eps
+    dp_dimensions = (
+        jax.flatten_util.ravel_pytree(init_design_params)[0].shape[0] / num_chains
+    )
+    ep_dimensions = (
+        jax.flatten_util.ravel_pytree(init_exogenous_params)[0].shape[0] / num_chains
+    )
+    print(f"dp_dimensions: {dp_dimensions}")
+    print(f"ep_dimensions: {ep_dimensions}")
+    L_dp = 1.0  # dp_dimensions
+    L_ep = 1.0  # ep_dimensions
+
     # Run the prediction+mitigation process
     t_start = time.perf_counter()
     dps, eps, dp_logprobs, ep_logprobs = predict_and_mitigate_failure_modes(
@@ -287,12 +300,10 @@ if __name__ == "__main__":
         init_exogenous_params,
         dp_logprior_fn=sys.dispatch_prior_logprob,
         ep_logprior_fn=sys.network_state_prior_logprob,
-        ep_potential_fn=lambda dp, ep: -jax.nn.elu(
-            failure_level - sys(dp, ep).potential
-        ),
-        dp_potential_fn=lambda dp, ep: -jax.nn.elu(
-            sys(dp, ep).potential - failure_level
-        ),
+        ep_potential_fn=lambda dp, ep: -L_ep
+        * jax.nn.elu(failure_level - sys(dp, ep).potential),
+        dp_potential_fn=lambda dp, ep: -L_dp
+        * jax.nn.elu(sys(dp, ep).potential - failure_level),
         # ep_potential_fn=lambda dp, ep: -(failure_level - sys(dp, ep).potential),
         # dp_potential_fn=lambda dp, ep: -(sys(dp, ep).potential - failure_level),
         init_sampler=init_sampler_fn,

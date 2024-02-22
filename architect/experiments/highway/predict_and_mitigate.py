@@ -640,6 +640,14 @@ if __name__ == "__main__":
             )
         )
 
+    # Adjust scaling based on the dimension of the dps and eps
+    dp_dimensions = jax.flatten_util.ravel_pytree(initial_dps)[0].shape[0] / num_chains
+    ep_dimensions = jax.flatten_util.ravel_pytree(initial_eps)[0].shape[0] / num_chains
+    print(f"dp_dimensions: {dp_dimensions}")
+    print(f"ep_dimensions: {ep_dimensions}")
+    L_dp = L * dp_dimensions
+    L_ep = L * ep_dimensions
+
     # Run the prediction+mitigation process
     t_start = time.perf_counter()
     dps, eps, dp_logprobs, ep_logprobs = predict_and_mitigate_failure_modes(
@@ -650,12 +658,12 @@ if __name__ == "__main__":
         ep_logprior_fn=lambda ep: non_ego_trajectory_prior_logprob(
             ep, nominal_trajectory, noise_scale
         ),
-        ep_potential_fn=lambda dp, ep: -L
+        ep_potential_fn=lambda dp, ep: -L_ep
         * jax.nn.elu(
             failure_level
             - simulate(env, dp, initial_state, ep, static_policy, T).potential
         ),
-        dp_potential_fn=lambda dp, ep: -L
+        dp_potential_fn=lambda dp, ep: -L_dp
         * jax.nn.elu(
             simulate(env, dp, initial_state, ep, static_policy, T).potential
             - failure_level

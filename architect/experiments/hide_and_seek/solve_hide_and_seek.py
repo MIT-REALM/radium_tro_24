@@ -323,7 +323,8 @@ if __name__ == "__main__":
         init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
             params,
             logprob_fn,
-            False,  # don't normalize gradients
+            True,  # normalize gradients
+            grad_clip,
         )
         make_kernel_fn = (
             lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
@@ -332,7 +333,7 @@ if __name__ == "__main__":
                 use_gradients,
                 stochasticity,
                 grad_clip,
-                False,  # don't normalize gradients
+                True,  # normalize gradients
                 True,  # use metroplis-hastings
             )
         )
