@@ -364,8 +364,8 @@ if __name__ == "__main__":
         return result.potential
 
     # Optimize the policy
-    steps = 100
-    lr = 1e-2
+    steps = 1000
+    lr = 1e-3
     optimizer = optax.adam(learning_rate=lr)
     value_and_grad_fn = jax.jit(jax.value_and_grad(cost_fn))
     opt_state = optimizer.init(dynamic_policy)
