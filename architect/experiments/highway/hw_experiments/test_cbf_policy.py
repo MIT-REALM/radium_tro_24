@@ -1,41 +1,106 @@
 """Test a simple policy for the highway environment."""
 
+import os
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
+import numpy as np
+import optax
+import tqdm
 from beartype.typing import NamedTuple, Tuple
 from jaxtyping import Array, Float
+from matplotlib.transforms import Affine2D
 
 from architect.experiments.highway.predict_and_mitigate import (
-    K,
     LinearTrajectory2D,
     MultiAgentTrajectoryLinear,
+    dlqr,
 )
 from architect.systems.components.sensing.vision.render import CameraIntrinsics
+from architect.systems.components.sensing.vision.shapes import Box
 from architect.systems.highway.driving_policy import DrivingPolicy
 from architect.systems.highway.highway_env import HighwayEnv, HighwayObs, HighwayState
-from architect.systems.highway.highway_scene import HighwayScene
+from architect.systems.highway.highway_scene import Car, HighwayScene
 from architect.utils import softmin
 
+# get LQR gains
+f1tenth_axle_length = 0.28
+v_target = 0.5
+A = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.1],
+        [0.0, 1.0, v_target * 0.1, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+)
+B = np.array(
+    [
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, v_target * 0.1 / f1tenth_axle_length],
+        [0.1, 0.0],
+    ]
+)
+Q = np.eye(4)
+R = np.eye(2)
+K, _, _ = dlqr(A, B, Q, R)
+K = jnp.array(K)
 
-def make_highway_env(image_shape: Tuple[int, int], focal_length: float = 0.1):
+
+def make_highway_env(image_shape: Tuple[int, int]):
     """Make the highway environment."""
-    scene = HighwayScene(num_lanes=3, lane_width=5.0, segment_length=200.0)
+    scene = HighwayScene(
+        num_lanes=2, lane_width=0.6, segment_length=10.0
+    )  # TODO match to f1tenth
+    scene.car = Car(
+        w_base=jnp.array(0.28),  # width at base of car
+        w_top=jnp.array(0.23),  # width at top of car
+        h_base=jnp.array(0.04),  # height to undecarriage
+        h_chassis=jnp.array(0.1),  # height of chassis
+        h_top=jnp.array(0.075),  # height of top of car
+        l_hood=jnp.array(0.09),  # length of hood
+        l_trunk=jnp.array(0.04),  # length of trunk
+        l_cabin=jnp.array(0.3),  # length of cabin
+        r_wheel=jnp.array(0.04),  # radius of wheel
+        w_wheel=jnp.array(0.03),  # width of wheel
+        rounding=jnp.array(0.01),
+    )
+    scene.walls = [
+        Box(
+            center=w.center,
+            extent=w.extent,
+            rotation=w.rotation,
+            c=w.c,
+            rounding=jnp.array(0.0),
+        )
+        for w in scene.walls
+    ]
+
     intrinsics = CameraIntrinsics(
-        focal_length=focal_length,
-        sensor_size=(0.1, 0.1),
+        focal_length=1.93e-3,
+        sensor_size=(3.855e-3, 3.855e-3),
         resolution=image_shape,
     )
-    initial_ego_state = jnp.array([-100.0, -3.0, 0.0, 10.0])
-    initial_non_ego_states = jnp.array(
+    initial_ego_state = jnp.array(
         [
-            [-90.0, -3.0, 0.0, 7.0],
-            [-70, 3.0, 0.0, 8.0],
+            -5.5,
+            -0.5,
+            0.0,
+            2.0 * v_target,
         ]
     )
-    initial_state_covariance = jnp.diag(jnp.array([0.5, 0.5, 0.001, 0.5]) ** 2)
+    initial_non_ego_states = jnp.array(
+        [
+            [-4.0, -0.5, 0.0, v_target],
+            [-2.0, 0.5, 0.0, v_target],
+        ]
+    )
+    initial_state_covariance = jnp.diag(jnp.array([0.1, 0.1, 0.001, 0.1]) ** 2)
 
     # Set the direction of light shading
     shading_light_direction = jnp.array([-0.2, -1.0, 1.5])
@@ -53,14 +118,19 @@ def make_highway_env(image_shape: Tuple[int, int], focal_length: float = 0.1):
         mean_shading_light_direction=shading_light_direction,
         shading_light_direction_covariance=shading_direction_covariance,
     )
+
+    # Update axle length to match f1tenth
+    env._axle_length = f1tenth_axle_length
+
     return env
 
 
 # Utilities for blurring the image to get a simple CBF-style control action
-def gaussian_kernel(size, sigma=1.0):
+def gaussian_kernel(shape, sigma=1.0):
     """Generates a 2D Gaussian kernel."""
-    ax = jnp.arange(-size // 2, size // 2)
-    xx, yy = jnp.meshgrid(ax, ax)
+    ay = jnp.arange(-shape[0] // 2, shape[0] // 2)
+    ax = jnp.arange(-shape[1] // 2, shape[1] // 2)
+    xx, yy = jnp.meshgrid(ax, ay)
     kernel = jnp.exp(-(xx**2 + yy**2) / (2.0 * sigma**2))
     return kernel / jnp.sum(kernel)
 
@@ -115,11 +185,11 @@ class SimpleDepthPolicy(eqx.Module):
         # Second, brake to avoid collisions based on the average distance to the
         # obstacle in the center of the image
         depth_image = obs.depth_image
-        depth_image = jnp.where(depth_image < 1e-3, 100.0, depth_image)
-        kernel = gaussian_kernel(depth_image.shape[0], 1.0)
+        min_distance = 1.0
+        depth_image = jnp.where(depth_image < 1e-3, min_distance, depth_image)
+        kernel = gaussian_kernel(depth_image.shape, 1.0)
         mean_distance = jnp.sum(depth_image * kernel) / jnp.sum(kernel)
-        min_distance = 10.0
-        vision_accel = jnp.clip(mean_distance - min_distance, 0.0, 2.0)
+        vision_accel = 5 * jnp.clip(mean_distance - min_distance, -2.0, 0.0)
 
         # Third, get the steering and braking action from the neural network
         image = jnp.reshape(depth_image, (-1,))
@@ -194,7 +264,7 @@ def simulate(
         # Take a step in the environment using the action carried over from the previous
         # step.
         next_state, next_observation, reward, done = env.step(
-            state, action, non_ego_stable_action, key
+            state, action, non_ego_stable_action, key, collision_sharpness=20.0
         )
 
         # Compute the action for the next step
@@ -219,15 +289,14 @@ def simulate(
     # Transform and rollout!
     keys = jrandom.split(jrandom.PRNGKey(0), max_steps)
     t = jnp.linspace(0, 1, max_steps)  # index into the reference trajectory
-    (_, final_state, _), (reward, state_traj) = jax.lax.scan(
+    (_, final_state, done), (reward, state_traj) = jax.lax.scan(
         step, (initial_action, initial_state, False), (keys, t)
     )
-
     # Get the final observation
     final_obs = env.get_obs(final_state)
 
     # The potential is the negative of the (soft) minimum reward observed
-    potential = -softmin(reward, sharpness=0.5)
+    potential = -softmin(reward, sharpness=10.0)
 
     return SimulationResults(
         potential,
@@ -239,27 +308,31 @@ def simulate(
 
 
 if __name__ == "__main__":
+    np.set_printoptions(precision=3)
+
     seed = 0
     image_width = 16
-    focal_length = 0.25
-    T = 60
+    aspect = 4.0 / 3.0
+    T = 100
 
     # Make a PRNG key (#sorandom)
     prng_key = jrandom.PRNGKey(seed)
 
     # Make the environment to use
-    image_shape = (image_width, image_width)
-    env = make_highway_env(image_shape, focal_length)
+    image_shape = (image_width, int(image_width / aspect))
+    env = make_highway_env(image_shape)
 
     # Make the policy
+
     policy = SimpleDepthPolicy(
         trajectory=jnp.array(
             [
-                [10.0, 0.0],
-                [20.0, 0.0],
-                [30.0, 0.0],
-                [40.0, 0.0],
-                [50.0, 0.0],
+                [0.0, 0.0],
+                [2.0, 0.3],
+                [4.0, 0.6],
+                [6.0, 0.6],
+                [8.0, 0.0],
+                [12.0, 0.0],
             ]
         ),
         key=prng_key,
@@ -273,11 +346,8 @@ if __name__ == "__main__":
     drive_straight = LinearTrajectory2D(
         p=jnp.array(
             [
-                [10.0, 0.0],
-                [20.0, 0.0],
-                [30.0, 0.0],
-                [40.0, 0.0],
-                [50.0, 0.0],
+                [0.0, 0.0],
+                [5.0, 0.0],
             ]
         )
     )
@@ -285,11 +355,44 @@ if __name__ == "__main__":
         trajectories=[drive_straight, drive_straight]
     )
 
+    # Define a cost function
+    def cost_fn(policy):
+        initial_state = env.reset(prng_key)  # TODO fix bad key management
+        result = simulate(
+            env, policy, initial_state, nominal_trajectory, static_policy, T
+        )
+        return result.potential
+
+    # Optimize the policy
+    steps = 100
+    lr = 1e-2
+    optimizer = optax.adam(learning_rate=lr)
+    value_and_grad_fn = jax.jit(jax.value_and_grad(cost_fn))
+    opt_state = optimizer.init(dynamic_policy)
+
+    pbar = tqdm.tqdm(range(steps))
+    for _ in pbar:
+        # Compute the gradients
+        cost, grads = value_and_grad_fn(dynamic_policy)
+        pbar.set_description(f"Cost: {cost:.3f}")
+
+        # Update the parameters
+        updates, opt_state = optimizer.update(grads, opt_state)
+        dynamic_policy = optax.apply_updates(dynamic_policy, updates)
+
+    # Save the policy
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    policy_file = os.path.join(current_dir, "base_policy.eqx")
+    eqx.tree_serialise_leaves(policy_file, eqx.combine(dynamic_policy, static_policy))
+    non_ego_file = os.path.join(current_dir, "non_ego_trajectory.eqx")
+    eqx.tree_serialise_leaves(non_ego_file, nominal_trajectory)
+
     # Run the policy
     initial_state = env.reset(prng_key)  # TODO fix bad key management
     result = simulate(
         env, dynamic_policy, initial_state, nominal_trajectory, static_policy, T
     )
+    print(result.potential)
 
     # Plot the results
     fig = plt.figure(figsize=(32, 8), constrained_layout=True)
@@ -298,47 +401,104 @@ if __name__ == "__main__":
             ["trajectory", "trajectory", "trajectory", "trajectory", "trajectory"],
         ],
     )
-    axs["trajectory"].axhline(7.5, linestyle="--", color="k")
-    axs["trajectory"].axhline(-7.5, linestyle="--", color="k")
+    axs["trajectory"].axhline(
+        env._highway_scene.walls[0].center[1], linestyle="--", color="k"
+    )
+    axs["trajectory"].axhline(
+        env._highway_scene.walls[1].center[1], linestyle="--", color="k"
+    )
     axs["trajectory"].plot(
         result.ego_trajectory[:, 0].T,
         result.ego_trajectory[:, 1].T,
         linestyle="-",
-        color="blue",
-        label="Ego",
+        color="red",
+        label="Actual trajectory (Ego)",
     )
     axs["trajectory"].plot(
         result.non_ego_trajectory[:, 0, 0],
         result.non_ego_trajectory[:, 0, 1],
-        linestyle="-.",
+        linestyle="-",
         color="blue",
-        label="Non-ego 1",
+        label="Actual trajectory (Non-ego 1)",
     )
     axs["trajectory"].plot(
         result.non_ego_trajectory[:, 1, 0],
         result.non_ego_trajectory[:, 1, 1],
-        linestyle="--",
+        linestyle="-",
         color="blue",
-        label="Non-ego 2",
+        label="Actual trajectory (Non-ego 2)",
     )
 
-    axs["trajectory"].scatter(
-        nominal_trajectory.trajectories[0].p[:, 0] + result.non_ego_trajectory[0, 0, 0],
-        nominal_trajectory.trajectories[0].p[:, 1] + result.non_ego_trajectory[0, 0, 1],
-        color="black",
-        marker="o",
+    # Plot the trajectories
+    t = jnp.linspace(0, 1, 100)
+    policy = eqx.combine(dynamic_policy, static_policy)
+    ego_planned_trajectory = jax.vmap(policy.trajectory)(t)
+    non_ego_planned_trajectory = jax.vmap(nominal_trajectory)(t)
+    axs["trajectory"].plot(
+        ego_planned_trajectory[:, 0] + result.ego_trajectory[0, 0],
+        ego_planned_trajectory[:, 1] + result.ego_trajectory[0, 1],
+        linestyle="--",
+        color="red",
+        label="Plan (Ego)",
     )
-    axs["trajectory"].scatter(
-        nominal_trajectory.trajectories[1].p[:, 0] + result.non_ego_trajectory[0, 1, 0],
-        nominal_trajectory.trajectories[1].p[:, 1] + result.non_ego_trajectory[0, 1, 1],
-        color="black",
-        marker="s",
+    axs["trajectory"].plot(
+        non_ego_planned_trajectory[:, :, 0] + result.non_ego_trajectory[0, :, 0],
+        non_ego_planned_trajectory[:, :, 1] + result.non_ego_trajectory[0, :, 1],
+        linestyle="--",
+        color="blue",
+        label="Plan (Non-ego)",
     )
-    axs["trajectory"].scatter(
-        policy.trajectory.p[:, 0] + result.ego_trajectory[0, 0],
-        policy.trajectory.p[:, 1] + result.ego_trajectory[0, 1],
-        color="black",
-        marker="s",
+
+    # Draw a rectangular patch at the final car positions
+    ego_car_pos = result.ego_trajectory[-1, :2]
+    ego_car_heading = result.ego_trajectory[-1, 2]
+    ego_car_width = env._highway_scene.car.width
+    ego_car_length = env._highway_scene.car.length
+    ego_car_patch = patches.Rectangle(
+        (ego_car_pos[0] - ego_car_length / 2, ego_car_pos[1] - ego_car_width / 2),
+        ego_car_length,
+        ego_car_width,
+        linewidth=1,
+        edgecolor="r",
+        facecolor="none",
     )
+    t = (
+        Affine2D().rotate_deg_around(
+            ego_car_pos[0], ego_car_pos[1], ego_car_heading * 180 / np.pi
+        )
+        + axs["trajectory"].transData
+    )
+    ego_car_patch.set_transform(t)
+    axs["trajectory"].add_patch(ego_car_patch)
+
+    for i in [0, 1]:
+        non_ego_car_pos = result.non_ego_trajectory[-1, i, :2]
+        non_ego_car_heading = result.non_ego_trajectory[-1, i, 2]
+        non_ego_car_width = env._highway_scene.car.width
+        non_ego_car_length = env._highway_scene.car.length
+        non_ego_car_patch = patches.Rectangle(
+            (
+                non_ego_car_pos[0] - non_ego_car_length / 2,
+                non_ego_car_pos[1] - non_ego_car_width / 2,
+            ),
+            non_ego_car_length,
+            non_ego_car_width,
+            linewidth=1,
+            edgecolor="b",
+            facecolor="none",
+        )
+        t = (
+            Affine2D().rotate_deg_around(
+                non_ego_car_pos[0],
+                non_ego_car_pos[1],
+                non_ego_car_heading * 180 / np.pi,
+            )
+            + axs["trajectory"].transData
+        )
+        non_ego_car_patch.set_transform(t)
+        axs["trajectory"].add_patch(non_ego_car_patch)
+
+    axs["trajectory"].legend()
+    axs["trajectory"].set_aspect("equal")
 
     plt.show()

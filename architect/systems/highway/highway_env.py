@@ -176,6 +176,7 @@ class HighwayEnv:
         non_ego_actions: Float[Array, "n_non_ego n_actions"],
         key: PRNGKeyArray,
         reset: bool = True,
+        collision_sharpness: float = 5.0,
     ) -> Tuple[HighwayState, HighwayObs, Float[Array, ""], Bool[Array, ""]]:
         """Take a step in the environment.
 
@@ -190,6 +191,7 @@ class HighwayEnv:
                 (acceleration and steering angle)
             key: a random number generator key
             reset: whether to reset the environment.
+            collision_sharpness: how sharp to make the collision penalty
 
         Returns:
             The next state of the environment, the observations, the reward, and a
@@ -220,7 +222,7 @@ class HighwayEnv:
             include_ground=False,
         )
         collision_reward = -self._collision_penalty * jax.nn.sigmoid(
-            -5 * min_distance_to_obstacle
+            -collision_sharpness * min_distance_to_obstacle
         )
         distance_reward = 1.0 * (next_ego_state[0] - ego_state[0]) / self._dt
         # lane_keeping_reward = (

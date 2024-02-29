@@ -48,6 +48,8 @@ class Car(NamedTuple):
     r_wheel: Float[Array, ""] = jnp.array(0.4)  # radius of wheel
     w_wheel: Float[Array, ""] = jnp.array(0.3)  # width of wheel
 
+    rounding: Float[Array, ""] = jnp.array(0.1)  # box rounding
+
     @property
     def length(self):
         return self.l_hood + self.l_trunk + self.l_cabin
@@ -98,7 +100,7 @@ class Car(NamedTuple):
             ),
             rotation=rotation,
             c=color,
-            rounding=jnp.array(0.1),
+            rounding=self.rounding,
         )
         cab = Box(
             center=jnp.array(
@@ -117,7 +119,7 @@ class Car(NamedTuple):
             ),
             rotation=rotation,
             c=jnp.array([255, 244, 236]) / 255.0,
-            rounding=jnp.array(0.3),
+            rounding=self.rounding,
         )
 
         l_all = self.l_cabin + self.l_trunk + self.l_hood
@@ -298,7 +300,8 @@ class HighwayScene:
         collider_pts_world = collider_pts_world.at[:, :2].add(collider_state[:2])
 
         # Return the minimum distance to any obstacle (negative if there's a collision)
-        return jax.vmap(scene)(collider_pts_world).min()
+        min_distance = jax.vmap(scene)(collider_pts_world).min()
+        return min_distance
 
     @jaxtyped(typechecker=beartype)
     def render_depth(
