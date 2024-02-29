@@ -125,16 +125,6 @@ def make_highway_env(image_shape: Tuple[int, int]):
     return env
 
 
-# Utilities for blurring the image to get a simple CBF-style control action
-def gaussian_kernel(shape, sigma=1.0):
-    """Generates a 2D Gaussian kernel."""
-    ay = jnp.arange(-shape[0] // 2, shape[0] // 2)
-    ax = jnp.arange(-shape[1] // 2, shape[1] // 2)
-    xx, yy = jnp.meshgrid(ax, ay)
-    kernel = jnp.exp(-(xx**2 + yy**2) / (2.0 * sigma**2))
-    return kernel / jnp.sum(kernel)
-
-
 class SimpleDepthPolicy(eqx.Module):
     """Define a policy that decides how much to brake/steer based on a depth image."""
 
@@ -153,6 +143,14 @@ class SimpleDepthPolicy(eqx.Module):
             activation=jax.nn.tanh,
         )
         self.trajectory = LinearTrajectory2D(p=trajectory)
+
+    def gaussian_kernel(self, shape, sigma=1.0):
+        """Generates a 2D Gaussian kernel."""
+        ay = jnp.arange(-shape[0] // 2, shape[0] // 2)
+        ax = jnp.arange(-shape[1] // 2, shape[1] // 2)
+        xx, yy = jnp.meshgrid(ax, ay)
+        kernel = jnp.exp(-(xx**2 + yy**2) / (2.0 * sigma**2))
+        return kernel / jnp.sum(kernel)
 
     def __call__(
         self,
@@ -187,7 +185,7 @@ class SimpleDepthPolicy(eqx.Module):
         depth_image = obs.depth_image
         min_distance = 1.0
         depth_image = jnp.where(depth_image < 1e-3, min_distance, depth_image)
-        kernel = gaussian_kernel(depth_image.shape, 1.0)
+        kernel = self.gaussian_kernel(depth_image.shape, 1.0)
         mean_distance = jnp.sum(depth_image * kernel) / jnp.sum(kernel)
         vision_accel = 5 * jnp.clip(mean_distance - min_distance, -2.0, 0.0)
 
