@@ -283,6 +283,11 @@ if __name__ == "__main__":
     #         ax.axhline(1, color="black", linestyle="--")
     #         ax.set_yscale("linear")
 
+    # Add a vertical dashed grey line between gradient-free and gradient-based
+    for row in g.axes:
+        for ax in row:
+            ax.axvline(1.5, color="grey", linestyle="--", alpha=0.5)
+
     # Label y axes
     for ax, metric_name in zip(g.axes[:, 0], stats_df["metric"].unique()):
         ax.set_ylabel(metric_name)

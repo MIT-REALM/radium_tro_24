@@ -74,6 +74,7 @@ if __name__ == "__main__":
     group_display_names = {
         "reinforce-predict-repair": "L2C",
         "rmh-predict-repair": "R0",
+        # "original": "$\theta_0$ (DR)",
         "gd": "ADV",
         "mala-predict-repair": "R1",
     }
@@ -127,8 +128,19 @@ if __name__ == "__main__":
                 | {name: run.summary.get(metric) for metric, name in metrics.items()}
             )
 
-            # TODO get statistic for DR/original policy by getting the history
-            # at the first step
+            # # Get statistic for DR/original policy by getting the history
+            # # at the first step
+            # metric_history = run.history(samples=100)
+            # summary_stats.append(
+            #     {
+            #         "project": project_name,
+            #         "group": "original",
+            #     }
+            #     | {
+            #         name: metric_history.iloc[0][metric]
+            #         for metric, name in metrics.items()
+            #     }
+            # )
 
     stats_df = pd.DataFrame(summary_stats)
 
@@ -239,6 +251,10 @@ if __name__ == "__main__":
     #     for ax in g.axes[i, :]:
     #         ax.axhline(1, color="black", linestyle="--")
     #         ax.set_yscale("linear")
+
+    for row in g.axes:
+        for ax in row:
+            ax.axvline(1.5, color="grey", linestyle="--", alpha=0.5)
 
     # Label y axes
     for ax, metric_name in zip(g.axes[:, 0], stats_df["metric"].unique()):
