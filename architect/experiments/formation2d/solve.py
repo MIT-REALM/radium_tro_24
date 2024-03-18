@@ -230,33 +230,33 @@ if __name__ == "__main__":
         alg_type = "static"
 
     # Initialize logger
-    wandb.init(
-        project=args.savename + f"-{n}-agents",
-        group=alg_type
-        + ("-predict" if predict else "")
-        + ("-repair" if repair else ""),
-        config={
-            "L": L,
-            "n": n,
-            "failure_level": failure_level,
-            "seed": args.seed,
-            "dp_mcmc_step_size": dp_mcmc_step_size,
-            "ep_mcmc_step_size": ep_mcmc_step_size,
-            "num_rounds": num_rounds,
-            "num_steps_per_round": num_mcmc_steps_per_round,
-            "num_chains": num_chains,
-            "use_gradients": use_gradients,
-            "use_stochasticity": use_stochasticity,
-            "reinforce": reinforce,
-            "repair": repair,
-            "predict": predict,
-            "temper": temper,
-            "quench_rounds": quench_rounds,
-            "grad_clip": grad_clip,
-            "num_stress_test_cases": num_stress_test_cases,
-            "max_wind_thrust": max_wind_thrust,
-        },
-    )
+    # wandb.init(
+    #     project=args.savename + f"-{n}-agents",
+    #     group=alg_type
+    #     + ("-predict" if predict else "")
+    #     + ("-repair" if repair else ""),
+    #     config={
+    #         "L": L,
+    #         "n": n,
+    #         "failure_level": failure_level,
+    #         "seed": args.seed,
+    #         "dp_mcmc_step_size": dp_mcmc_step_size,
+    #         "ep_mcmc_step_size": ep_mcmc_step_size,
+    #         "num_rounds": num_rounds,
+    #         "num_steps_per_round": num_mcmc_steps_per_round,
+    #         "num_chains": num_chains,
+    #         "use_gradients": use_gradients,
+    #         "use_stochasticity": use_stochasticity,
+    #         "reinforce": reinforce,
+    #         "repair": repair,
+    #         "predict": predict,
+    #         "temper": temper,
+    #         "quench_rounds": quench_rounds,
+    #         "grad_clip": grad_clip,
+    #         "num_stress_test_cases": num_stress_test_cases,
+    #         "max_wind_thrust": max_wind_thrust,
+    #     },
+    # )
 
     # Add exponential tempering if using
     t = jnp.linspace(0, 1, num_rounds)
@@ -370,6 +370,49 @@ if __name__ == "__main__":
         dt=0.05,
         communication_range=R,
     )
+
+
+    # Test runtimes
+    dp = jax.tree_util.tree_map(lambda x: x[0], init_robot_trajectories)
+    wind = KernelWindField(prng_key)
+    conn = sample_random_connection_strengths(prng_key, n)
+    ep = (
+        wind,
+        conn,
+    )
+    N_trials = 100
+    from tqdm import tqdm
+
+    # test without AD
+    test_fn = lambda dp, ep: simulate_fn(dp, ep).potential
+    test_fn_jit = jax.jit(test_fn)
+    result = test_fn_jit(dp, ep)
+    result.block_until_ready()
+    no_ad_times = []
+    for _ in tqdm(range(N_trials)):
+        t0 = time.perf_counter()
+        result = test_fn_jit(dp, ep)
+        result.block_until_ready()
+        no_ad_times.append(time.perf_counter() - t0)
+
+    no_ad_times = jnp.array(no_ad_times)
+    print(f"No AD: mean {no_ad_times.mean()} std {no_ad_times.std()}")
+
+    # test with AD
+    test_fn_jit = jax.jit(jax.value_and_grad(test_fn))
+    ad_times = []
+    result = test_fn_jit(dp, ep)[0]
+    result.block_until_ready()
+    for _ in tqdm(range(N_trials)):
+        t0 = time.perf_counter()
+        result = test_fn_jit(dp, ep)[0]
+        result.block_until_ready()
+        ad_times.append(time.perf_counter() - t0)
+
+    ad_times = jnp.array(ad_times)
+    print(f"W/ AD: mean {ad_times.mean()} std {ad_times.std()}")
+
+    1 / 0
 
     if reinforce:
         init_sampler_fn = init_reinforce_sampler

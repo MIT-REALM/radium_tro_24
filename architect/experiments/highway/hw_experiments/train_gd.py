@@ -362,7 +362,7 @@ if __name__ == "__main__":
         return result.potential
 
     # Optimize the policy
-    steps = 1000
+    steps = 300
     lr = 1e-3
     optimizer = optax.adam(learning_rate=lr)
     value_and_grad_fn = jax.jit(jax.value_and_grad(cost_fn))
@@ -378,12 +378,33 @@ if __name__ == "__main__":
         updates, opt_state = optimizer.update(grads, opt_state)
         dynamic_policy = optax.apply_updates(dynamic_policy, updates)
 
-    # Save the policy
+    # Add the initial states to the trajectories so we can re-create them
+    non_ego_traj = MultiAgentTrajectoryLinear(
+        trajectories=[
+            LinearTrajectory2D(
+                p=nominal_trajectory.trajectories[0].p
+                + env._initial_non_ego_states[0, :2]
+            ),
+            LinearTrajectory2D(
+                p=nominal_trajectory.trajectories[1].p
+                + env._initial_non_ego_states[1, :2]
+            ),
+        ]
+    )
+    policy = eqx.combine(dynamic_policy, static_policy)
+    ego_traj = LinearTrajectory2D(p=policy.trajectory.p + env._initial_ego_state[:2])
+
+    # Save the policy/trajectory
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    policy_file = os.path.join(current_dir, "base_policy.eqx")
-    eqx.tree_serialise_leaves(policy_file, eqx.combine(dynamic_policy, static_policy))
-    non_ego_file = os.path.join(current_dir, "non_ego_trajectory.eqx")
-    eqx.tree_serialise_leaves(non_ego_file, nominal_trajectory)
+    save_dir = os.path.join(current_dir, "base")
+    os.makedirs(save_dir, exist_ok=True)
+    mlp_policy_file = os.path.join(save_dir, "mlp.eqx")
+    ego_traj_file = os.path.join(save_dir, "ego_traj.eqx")
+    eqx.tree_serialise_leaves(mlp_policy_file, policy.actor_fcn)
+    eqx.tree_serialise_leaves(ego_traj_file, ego_traj)
+    for i, traj in enumerate(nominal_trajectory.trajectories):
+        non_ego_traj_file = os.path.join(save_dir, f"non_ego_traj_{i}.eqx")
+        eqx.tree_serialise_leaves(non_ego_traj_file, non_ego_traj.trajectories[i])
 
     # Run the policy
     initial_state = env.reset(prng_key)  # TODO fix bad key management

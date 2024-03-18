@@ -54,7 +54,7 @@ if __name__ == "__main__":
     project_display_names = {
         "highway_walls-predict-repair-noise_1.0": "AV (highway)",
         "iclr_intersection_sharp0.5-predict-repair-5x10": "AV (intersection)",
-        "drone-predict-repair-10x10": "Drone",
+        "drone-predict-repair-10x10": "Drone (static)",
         "grasping_0.003-predict-repair-5x10": "Grasping",
     }
 
@@ -70,9 +70,17 @@ if __name__ == "__main__":
         "Grasping": ("linear", (-1.0, -0.5)),
     }
 
+    x_limits = [
+        (0, 10),
+        (0, 5),
+        (0, 10),
+        (0, 5),
+        (0, 5),
+        (0, 5),
+    ]
+
     # Define groups and diplay names
     group_display_names = {
-        "original": "$\\theta_0$",
         "reinforce-predict-repair": "$L2C$",
         "rmh-predict-repair": "$R_0$",
         "gd": "$GD_a$",
@@ -84,12 +92,10 @@ if __name__ == "__main__":
     # Define metrics of interest
     metrics = {
         "Failure rate (test)": "Failure rate",
-        "Mean Cost": "Mean Cost",
-        "Max Cost": "Max Cost",
     }
 
     # Initialize a dictionary to store the summary statistics for each run
-    summary_stats = []
+    stats = []
 
     # Initialize the wandb API
     api = wandb.Api()
@@ -120,43 +126,18 @@ if __name__ == "__main__":
             if "grasping" in project:
                 project_name += f" ({run.config['object_type']})"
 
-            summary_stats.append(
-                {
-                    "project": project_name,
-                    "group": group_display_names[run.group],
-                }
-                | {name: run.summary.get(metric) for metric, name in metrics.items()}
-            )
+            # Get the history for each metric
+            run_history = run.history(samples=100)
+            metric_history = run_history[metrics.keys()].copy()
+            metric_history.rename(columns=metrics, inplace=True)
+            metric_history["group"] = group_display_names[run.group]
+            metric_history["project"] = project_name
+            metric_history = metric_history.reset_index()
+            metric_history.rename(columns={"index": "step"}, inplace=True)
+            metric_history["step"] = metric_history["step"].astype(int)
+            stats.append(metric_history)
 
-            # Get statistic for DR/original policy by getting the history
-            # at the first step
-            metric_history = run.history(samples=100)
-            summary_stats.append(
-                {
-                    "project": project_name,
-                    "group": group_display_names["original"],
-                }
-                | {
-                    name: metric_history.iloc[0][metric]
-                    for metric, name in metrics.items()
-                }
-            )
-
-    stats_df = pd.DataFrame(summary_stats)
-
-    # Normalize all costs by the maximum test cost
-    max_test_cost = stats_df.groupby("project")[metrics["Max Cost"]].max()
-    min_test_cost = 0.5 * max_test_cost  # Use 50% of max cost as min cost
-    stats_df[metrics["Max Cost"]] = stats_df.apply(
-        lambda row: (row[metrics["Max Cost"]] - min_test_cost[row["project"]])
-        / (max_test_cost[row["project"]] - min_test_cost[row["project"]]),
-        axis=1,
-    )
-    stats_df[metrics["Mean Cost"]] = stats_df.apply(
-        lambda row: (row[metrics["Mean Cost"]] - min_test_cost[row["project"]])
-        / (max_test_cost[row["project"]] - min_test_cost[row["project"]]),
-        axis=1,
-    )
+    stats_df = pd.concat(stats)
 
     # Replace zero test failure rates with 10^-3
     stats_df[metrics["Failure rate (test)"]] = stats_df[
@@ -165,7 +146,7 @@ if __name__ == "__main__":
 
     # Melt the dataframe for use with seaborn
     stats_df = stats_df.melt(
-        id_vars=["project", "group"],
+        id_vars=["project", "group", "step"],
         value_vars=[
             col for col in stats_df.columns if col != "project" and col != "group"
         ],
@@ -174,22 +155,33 @@ if __name__ == "__main__":
     )
 
     g = sns.FacetGrid(
-        stats_df, row="metric", col="project", height=3, aspect=1, sharey=False
+        stats_df,
+        row="metric",
+        col="project",
+        height=3,
+        aspect=1,
+        sharey=False,
+        sharex=False,
     )
     g.set_titles(template="{col_name}")
     g.map_dataframe(
-        sns.pointplot,
+        sns.lineplot,
         data=stats_df,
-        x="group",
+        x="step",
         y="value",
         hue="group",
-        linestyles="none",
-        order=group_display_names.values(),
+        # linestyles="none",
+        # order=group_display_names.values(),
         hue_order=group_display_names.values(),
         palette="colorblind",
     )
     g.set_axis_labels("", "")
-    # g.add_legend()
+    g.add_legend(
+        loc="lower center",
+        title=None,
+        ncol=len(groups),
+        # bbox_to_anchor=(0.5, 1.15),  # TODO why no working???
+    )
     # sns.move_legend(
     #     g.axes[0][0],
     #     "upper center",
@@ -241,21 +233,6 @@ if __name__ == "__main__":
                     ax.set_yscale(scale)
                     ax.set_ylim(*limits)
 
-    # # Add a black line at 0 for the normalized predicted cost
-    # pred_cost_indices = [
-    #     i
-    #     for i, metric in enumerate(stats_df["metric"].unique())
-    #     if "Predicted" in metric
-    # ]
-    # for i in pred_cost_indices:
-    #     for ax in g.axes[i, :]:
-    #         ax.axhline(1, color="black", linestyle="--")
-    #         ax.set_yscale("linear")
-
-    for row in g.axes:
-        for ax in row:
-            ax.axvline(2.5, color="grey", linestyle="--", alpha=0.5)
-
     # Label y axes
     for ax, metric_name in zip(g.axes[:, 0], stats_df["metric"].unique()):
         ax.set_ylabel(metric_name)
@@ -277,6 +254,15 @@ if __name__ == "__main__":
     for ax in g.axes[-1, :]:
         ax.tick_params(axis="x", labelsize=12)
 
+    # Formal all x tick labels as whole numbers
+    for ax in g.axes[-1, :]:
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x)}"))
+
+    # Set x axis limits
+    for row in g.axes:
+        for ax, (x_min, x_max) in zip(row, x_limits):
+            ax.set_xlim(x_min, x_max)
+
     fig = g.figure
     fig.tight_layout()
-    plt.savefig("paper_plots/vision.png", dpi=300)
+    plt.savefig("paper_plots/vision_convergence.svg", dpi=300)
