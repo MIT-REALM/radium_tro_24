@@ -91,13 +91,13 @@ def make_highway_env(image_shape: Tuple[int, int]):
             -5.5,
             -0.5,
             0.0,
-            2.0 * v_target,
+            3.0 * v_target,
         ]
     )
     initial_non_ego_states = jnp.array(
         [
-            [-4.0, -0.5, 0.0, v_target],
-            [-2.0, 0.5, 0.0, v_target],
+            [-3.5, -0.5, 0.0, v_target],
+            [-1.5, 0.5, 0.0, v_target],
         ]
     )
     initial_state_covariance = jnp.diag(jnp.array([0.1, 0.1, 0.001, 0.1]) ** 2)
@@ -362,7 +362,7 @@ if __name__ == "__main__":
         return result.potential
 
     # Optimize the policy
-    steps = 300
+    steps = 100
     lr = 1e-3
     optimizer = optax.adam(learning_rate=lr)
     value_and_grad_fn = jax.jit(jax.value_and_grad(cost_fn))
@@ -520,4 +520,4 @@ if __name__ == "__main__":
     axs["trajectory"].legend()
     axs["trajectory"].set_aspect("equal")
 
-    plt.show()
+    plt.savefig("debug.png")
