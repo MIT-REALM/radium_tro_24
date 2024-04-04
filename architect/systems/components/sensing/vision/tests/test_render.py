@@ -203,6 +203,75 @@ def test_render_depth_image(intrinsics):
     assert depth_image.shape[1] == intrinsics.resolution[1]
 
 
+def test_render_depth_image_grad():
+    """Test rendering a depth image of a scene."""
+
+    # Define a function that renders a depth image with a shape at a given height
+    def render_depth_image_with_shape(height):
+        # Make a scene
+        sphere = Sphere(
+            center=jnp.array([0.0, -1.0, 2.0 + height]), radius=jnp.array(1.0)
+        )
+
+        # Combine into one scene
+        scene = Scene(
+            [
+                sphere,
+            ],
+            sharpness=100.0,
+        )
+
+        # Set the camera parameters
+        camera_origin = jnp.array([3.0, 3.0, 3.0])
+        camera_R_to_world = look_at(camera_origin, jnp.zeros(3))
+        extrinsics = CameraExtrinsics(
+            camera_R_to_world=camera_R_to_world,
+            camera_origin=camera_origin,
+        )
+        intrinsics = CameraIntrinsics(
+            focal_length=0.1, sensor_size=(0.1, 0.1), resolution=(1024, 1024)
+        )
+
+        # Generate the rays
+        rays = pinhole_camera_rays(intrinsics, extrinsics)
+
+        # Raycast the scene, which returns the world coordinates of the first intersection
+        # of each ray with objects in the scene.
+        hit_pts = jax.vmap(raycast, in_axes=(None, None, 0, None))(
+            scene, camera_origin, rays, 40
+        )
+
+        # Render to depth
+        depth_image = render_depth(
+            hit_pts, intrinsics, extrinsics, max_dist=10.0
+        ).reshape(intrinsics.resolution)
+
+        # Downsize to anti-alias
+        depth_image = jax.image.resize(
+            depth_image,
+            (intrinsics.resolution[0] // 16, intrinsics.resolution[1] // 16),
+            method=jax.image.ResizeMethod.LINEAR,
+        )
+
+        return depth_image
+
+    # Render depth and get the gradient
+    depth_image = render_depth_image_with_shape(0.0)
+    grad = jax.jacfwd(render_depth_image_with_shape)(0.0)
+
+    # # Uncomment to render
+    # import matplotlib.colors as mcolors
+    # import matplotlib.pyplot as plt
+
+    # # Display the depth image in one subplot, and the colorized gradient in another
+    # _, (ax1, ax2) = plt.subplots(1, 2)
+    # ax1.imshow(depth_image.T)
+    # ax2.imshow(grad.T, cmap="bwr", norm=mcolors.CenteredNorm())
+    # plt.show()
+
+    assert grad.shape == depth_image.shape  # since we're differentiating wrt a scalar
+
+
 def test_render_color_image(intrinsics):
     """Test rendering a color image of a scene."""
     # Make a scene
@@ -284,3 +353,82 @@ def test_render_color_image(intrinsics):
     assert color_image.shape[2] == 3
     assert shadows.shape[0] == intrinsics.resolution[0]
     assert shadows.shape[1] == intrinsics.resolution[1]
+
+
+def test_render_color_image_grad():
+    """Test rendering a color image of a scene and its gradient."""
+
+    # Define a function that renders a depth image with a shape at a given height
+    def render_color_image_with_shape(height):
+        # Make a scene
+        sphere = Sphere(
+            center=jnp.array([0.0, -1.0, 2.0 + height]), radius=jnp.array(1.0)
+        )
+
+        # Modify colors
+        Sphere.color = lambda self, x: jnp.array([0.0, 0.0, 1.0])
+
+        # Combine into one scene
+        scene = Scene(
+            [
+                sphere,
+            ],
+            sharpness=100.0,
+        )
+
+        # Set the camera parameters
+        camera_origin = jnp.array([3.0, 3.0, 3.0])
+        camera_R_to_world = look_at(camera_origin, jnp.zeros(3))
+        extrinsics = CameraExtrinsics(
+            camera_R_to_world=camera_R_to_world,
+            camera_origin=camera_origin,
+        )
+
+        # Define higher-resolution intrinsics
+        intrinsics = CameraIntrinsics(
+            sensor_size=(0.1, 0.1),
+            resolution=(256, 256),
+            focal_length=0.1,
+        )
+
+        # Generate the rays
+        rays = pinhole_camera_rays(intrinsics, extrinsics)
+
+        # Raycast the scene, which returns the world coordinates of the first intersection
+        # of each ray with objects in the scene.
+        hit_pts = jax.vmap(raycast, in_axes=(None, None, 0, None))(
+            scene, camera_origin, rays, 20
+        )
+
+        # Render to color
+        color_image = render_color(hit_pts, scene).reshape(*intrinsics.resolution, 3)
+
+        # Render shadows
+        light_direction = jnp.array([0.0, 0.0, 1.0])
+        shadows = render_shadows(hit_pts, scene, light_direction).reshape(
+            intrinsics.resolution
+        )
+        color_image = color_image * shadows[:, :, None]
+
+        # Downsize to anti-alias
+        color_image = jax.image.resize(
+            color_image,
+            (intrinsics.resolution[0] // 4, intrinsics.resolution[1] // 4, 3),
+            method=jax.image.ResizeMethod.LINEAR,
+        )
+
+        return color_image
+
+    color_image = render_color_image_with_shape(0.0)
+    grad = jax.jacfwd(render_color_image_with_shape)(0.0)
+
+    # # Uncomment to render
+    # import matplotlib.colors as mcolors
+    # import matplotlib.pyplot as plt
+
+    # _, (ax1, ax2) = plt.subplots(1, 2)
+    # ax1.imshow(color_image.transpose(1, 0, 2))
+    # ax2.imshow(grad[:, :, 2].T, cmap="bwr", norm=mcolors.CenteredNorm())  # Blue channel
+    # plt.show()
+
+    assert color_image.shape == grad.shape

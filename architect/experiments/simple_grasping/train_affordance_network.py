@@ -1,4 +1,5 @@
 """Train the grasp affordance network for the simple grasping environment."""
+
 import os
 
 import equinox as eqx
@@ -57,8 +58,7 @@ def generate_example(key: PRNGKeyArray, object: str = "mug") -> TrainingData:
     )
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def shuffle_examples(examples: TrainingData, key: PRNGKeyArray) -> TrainingData:
     """Shuffle the examples.
 

@@ -1,7 +1,7 @@
 """Code to predict and mitigate failure modes in the intersection scenario."""
+
 import argparse
 import json
-import operator
 import os
 import shutil
 import time
@@ -11,24 +11,31 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
 from beartype.typing import NamedTuple
 from jaxtyping import Array, Float, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
 from architect.engines.reinforce import init_sampler as init_reinforce_sampler
 from architect.engines.reinforce import make_kernel as make_reinforce_kernel
 from architect.engines.samplers import init_sampler as init_mcmc_sampler
 from architect.engines.samplers import make_kernel as make_mcmc_kernel
+from architect.experiments.highway.predict_and_mitigate import (
+    LinearTrajectory2D,
+    MultiAgentTrajectoryLinear,
+    non_ego_trajectory_prior_logprob,
+    sample_non_ego_trajectory,
+)
 from architect.experiments.intersection.train_intersection_agent_bc import (
     make_intersection_env,
 )
 from architect.systems.highway.highway_env import HighwayObs, HighwayState
 from architect.systems.intersection.env import IntersectionEnv
 from architect.systems.intersection.policy import DrivingPolicy
-from architect.types import PRNGKeyArray
 from architect.utils import softmin
 
 # Type for non ego action trajectory
@@ -84,59 +91,6 @@ K_right, _, _ = dlqr(A(np.pi / 2), B, Q, R)
 K_right = jnp.array(K_right)
 
 
-def sample_non_ego_actions(
-    key: PRNGKeyArray,
-    env: IntersectionEnv,
-    horizon: int,
-    n_non_ego: int,
-    noise_scale: float = 0.05,
-) -> NonEgoActions:
-    """Sample actions for the non-ego vehicles.
-
-    These are residual applied on top of a proportional feedback controller.
-
-    Args:
-        key: A PRNG key.
-        env: The environment to sample actions for.
-        horizon: The number of steps to sample actions for.
-        n_non_ego: The number of non-ego vehicles.
-
-    Returns:
-        A NonEgoActions object.
-    """
-    noise_cov = noise_scale * jnp.eye(2)
-    keys = jrandom.split(key, horizon)
-    actions = jax.vmap(env.sample_non_ego_actions, in_axes=(0, None, None))(
-        keys,
-        noise_cov,
-        n_non_ego,
-    )
-    return actions
-
-
-def non_ego_actions_prior_logprob(
-    actions: NonEgoActions,
-    env: IntersectionEnv,
-    noise_scale: float = 0.05,
-) -> Float[Array, ""]:
-    """Compute the log probability of a set of non-ego actions.
-
-    Args:
-        actions: The actions to compute the log probability of.
-        env: The environment to sample actions for
-        noise_scale: The scale of the noise to use.
-
-    Returns:
-        The log probability of the actions.
-    """
-    noise_cov = noise_scale * jnp.eye(2)
-    logprob = jax.vmap(env.non_ego_actions_prior_logprob, in_axes=(0, None))(
-        actions,
-        noise_cov,
-    )
-    return logprob.mean()
-
-
 class SimulationResults(NamedTuple):
     """A class for storing the results of a simulation."""
 
@@ -151,7 +105,7 @@ def simulate(
     env: IntersectionEnv,
     policy: DrivingPolicy,
     initial_state: HighwayState,
-    non_ego_actions: NonEgoActions,
+    non_ego_reference_trajectory: MultiAgentTrajectoryLinear,
     static_policy: DrivingPolicy,
     max_steps: int = 60,
 ) -> Float[Array, ""]:
@@ -167,7 +121,7 @@ def simulate(
         env: The environment to simulate.
         policy: The parts of the policy that are design parameters.
         initial_state: The initial state of the environment.
-        non_ego_actions: The actions of the non-ego vehicles.
+        non_ego_reference_trajectory: The reference trajectory for the non-ego agents.
         static_policy: the parts of the policy that are not design parameters.
         max_steps: The maximum number of steps to simulate.
 
@@ -177,16 +131,11 @@ def simulate(
     # Merge the policy back together
     policy = eqx.combine(policy, static_policy)
 
-    # Set goals for the non-ego agents that are far in front of their initial
-    # positions
-    non_ego_goals = initial_state.non_ego_states  # immutable arrays = no worries
-    non_ego_goals = non_ego_goals.at[:, 0].add(60 * jnp.cos(non_ego_goals[:, 2]))
-    non_ego_goals = non_ego_goals.at[:, 1].add(60 * jnp.sin(non_ego_goals[:, 2]))
-
     @jax.checkpoint
     def step(carry, scan_inputs):
         # Unpack the input
-        key, non_ego_action = scan_inputs
+        key, t = scan_inputs
+        reference_waypoint = non_ego_reference_trajectory(t)
 
         # Unpack the carry
         action, state, already_done = carry
@@ -195,8 +144,7 @@ def simulate(
         # to the environment and policy.
         step_subkey, action_subkey = jrandom.split(key)
 
-        # The action passed in is a residual applied to a stabilizing policy for each
-        # non-ego agent
+        # Track the non-ego agent's reference trajectory
         compute_lqr_left = lambda non_ego_state, target_state: -K_left @ (
             non_ego_state - target_state
         )
@@ -210,17 +158,17 @@ def simulate(
             non_ego_state,
             target_state,
         )
-        non_ego_stable_action = jax.vmap(compute_lqr)(
-            state.non_ego_states,
-            non_ego_goals,
-        )
+        target = initial_state.non_ego_states  # copy initial heading, velocity, etc.
+        # add the waypoint relative to the initial position
+        target = target.at[:, :2].add(reference_waypoint)
+        non_ego_stable_action = jax.vmap(compute_lqr)(state.non_ego_states, target)
 
         # Take a step in the environment using the action carried over from the previous
         # step.
         next_state, next_observation, reward, done = env.step(
             state,
             action,
-            non_ego_action + non_ego_stable_action,
+            non_ego_stable_action,
             step_subkey,
             eval=True,
         )
@@ -246,8 +194,9 @@ def simulate(
 
     # Transform and rollout!
     keys = jrandom.split(jrandom.PRNGKey(0), max_steps)
+    t = jnp.linspace(0, 1, max_steps)  # index into the reference trajectory
     (_, final_state, _), (reward, state_traj) = jax.lax.scan(
-        step, (initial_action, initial_state, False), (keys, non_ego_actions)
+        step, (initial_action, initial_state, False), (keys, t)
     )
 
     # Get the final observation
@@ -257,7 +206,7 @@ def simulate(
     # and penalize the agent for not crossing the road
     target_x = 20.0
     distance_to_target_x = jax.nn.elu(target_x - final_state.ego_state[0])
-    potential = -softmin(reward, sharpness=5.0) + 0.1 * distance_to_target_x
+    potential = -softmin(reward, sharpness=0.5) + 0.1 * distance_to_target_x
 
     return SimulationResults(
         potential,
@@ -268,29 +217,141 @@ def simulate(
     )
 
 
+def plotting_cb(dp, eps):
+    """Plot the results of the simulation with the given DP and all given EPs.
+
+    Args:
+        dp: The DP to plot.
+        eps: The EPs to plot.
+    """
+    # Evaluate the solutions proposed by the prediction+mitigation algorithm
+    result = eqx.filter_vmap(
+        lambda dp, ep: simulate(env, dp, initial_state, ep, static_policy, T),
+        in_axes=(None, 0),
+    )(dp, eps)
+
+    # Plot the results
+    fig = plt.figure(figsize=(32, 16), constrained_layout=True)
+    axs = fig.subplot_mosaic(
+        [
+            ["trajectory", "trajectory", "trajectory", "trajectory", "trajectory"],
+            ["trajectory", "trajectory", "trajectory", "trajectory", "trajectory"],
+            ["trajectory", "trajectory", "trajectory", "trajectory", "trajectory"],
+            ["final_obs", "final_obs", "final_obs", "final_obs", "final_obs"],
+            ["reward", "reward", "reward", "reward", "reward"],
+        ],
+    )
+
+    # Plot the trajectories for each case, color-coded by potential
+    max_potential = jnp.max(result.potential)
+    min_potential = jnp.min(result.potential)
+    normalized_potential = (result.potential - min_potential) / (
+        max_potential - min_potential
+    )
+    axs["trajectory"].plot([-7.5 - 15, -7.5, -7.5], [7.5, 7.5, 7.5 + 15], "k--")
+    axs["trajectory"].plot([-7.5 - 15, -7.5, -7.5], [-7.5, -7.5, -7.5 - 15], "k--")
+    axs["trajectory"].plot([7.5 + 15, 7.5, 7.5], [7.5, 7.5, 7.5 + 15], "k--")
+    axs["trajectory"].plot([7.5 + 15, 7.5, 7.5], [-7.5, -7.5, -7.5 - 15], "k--")
+    axs["trajectory"].set_xlim([-7.5 - 15, 7.5 + 15])
+    axs["trajectory"].set_ylim([-7.5 - 15, 7.5 + 15])
+    for chain_idx in range(num_chains):
+        axs["trajectory"].plot(
+            result.ego_trajectory[chain_idx, :, 0].T,
+            result.ego_trajectory[chain_idx, :, 1].T,
+            linestyle="-",
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            label="Ego" if chain_idx == 0 else None,
+        )
+        axs["trajectory"].plot(
+            result.non_ego_trajectory[chain_idx, :, 0, 0],
+            result.non_ego_trajectory[chain_idx, :, 0, 1],
+            linestyle="-.",
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            label="Non-ego 1" if chain_idx == 0 else None,
+        )
+        axs["trajectory"].scatter(
+            eps.trajectories[0].p[chain_idx, :, 0]
+            + result.non_ego_trajectory[chain_idx, 0, 0, 0],
+            eps.trajectories[0].p[chain_idx, :, 1]
+            + result.non_ego_trajectory[chain_idx, 0, 0, 1],
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            marker="o",
+        )
+        axs["trajectory"].plot(
+            result.non_ego_trajectory[chain_idx, :, 1, 0],
+            result.non_ego_trajectory[chain_idx, :, 1, 1],
+            linestyle="--",
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            label="Non-ego 2" if chain_idx == 0 else None,
+        )
+        axs["trajectory"].scatter(
+            eps.trajectories[1].p[chain_idx, :, 0]
+            + result.non_ego_trajectory[chain_idx, 0, 1, 0],
+            eps.trajectories[1].p[chain_idx, :, 1]
+            + result.non_ego_trajectory[chain_idx, 0, 1, 1],
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            marker="s",
+        )
+        axs["trajectory"].plot(
+            result.non_ego_trajectory[chain_idx, :, 2, 0],
+            result.non_ego_trajectory[chain_idx, :, 2, 1],
+            linestyle="--",
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            label="Non-ego 3" if chain_idx == 0 else None,
+        )
+
+        axs["trajectory"].scatter(
+            eps.trajectories[2].p[chain_idx, :, 0]
+            + result.non_ego_trajectory[chain_idx, 0, 2, 0],
+            eps.trajectories[2].p[chain_idx, :, 1]
+            + result.non_ego_trajectory[chain_idx, 0, 2, 1],
+            color=plt.cm.plasma(normalized_potential[chain_idx]),
+            marker="^",
+        )
+    axs["trajectory"].set_aspect("equal")
+
+    # Plot the reward across all failure cases
+    axs["reward"].plot(result.potential, "ko")
+    axs["reward"].set_ylabel("Potential (negative min reward)")
+
+    # Plot the final RGB observations tiled on the same subplot
+    axs["final_obs"].imshow(
+        jnp.concatenate(result.final_obs.color_image.transpose(0, 2, 1, 3), axis=1)
+    )
+
+    # log the figure to wandb
+    wandb.log({"plot": fig}, commit=False)
+
+    # Close the figure
+    plt.close()
+
+
 if __name__ == "__main__":
+    matplotlib.use("Agg")
     # Set up arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--savename", type=str, default="intersection_lqr")
     parser.add_argument("--image_w", type=int, nargs="?", default=32)
     parser.add_argument("--image_h", type=int, nargs="?", default=32)
-    parser.add_argument("--noise_scale", type=float, nargs="?", default=0.5)
-    parser.add_argument("--failure_level", type=int, nargs="?", default=2.5)
+    parser.add_argument("--noise_scale", type=float, nargs="?", default=1.0)
+    parser.add_argument("--failure_level", type=float, nargs="?", default=11.0)
     parser.add_argument("--T", type=int, nargs="?", default=100)
     parser.add_argument("--seed", type=int, nargs="?", default=0)
     parser.add_argument("--L", type=float, nargs="?", default=1.0)
     parser.add_argument("--dp_logprior_scale", type=float, nargs="?", default=1.0)
     parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-3)
     parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-3)
-    parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
-    parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=1)
+    parser.add_argument("--num_rounds", type=int, nargs="?", default=5)
+    parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=10)
     parser.add_argument("--num_chains", type=int, nargs="?", default=10)
     parser.add_argument("--quench_rounds", type=int, nargs="?", default=0)
     parser.add_argument("--disable_gradients", action="store_true")
     parser.add_argument("--disable_stochasticity", action="store_true")
     parser.add_argument("--disable_mh", action="store_true")
     parser.add_argument("--reinforce", action="store_true")
+    parser.add_argument("--zero_order_gradients", action="store_true")
+    parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=1_000)
     boolean_action = argparse.BooleanOptionalAction
     parser.add_argument("--repair", action=boolean_action, default=False)
     parser.add_argument("--predict", action=boolean_action, default=True)
@@ -315,6 +376,8 @@ if __name__ == "__main__":
     use_stochasticity = not args.disable_stochasticity
     use_mh = not args.disable_mh
     reinforce = args.reinforce
+    zero_order_gradients = args.zero_order_gradients
+    num_stress_test_cases = args.num_stress_test_cases
     repair = args.repair
     predict = args.predict
     temper = args.temper
@@ -322,32 +385,58 @@ if __name__ == "__main__":
     grad_clip = args.grad_clip
     normalize_gradients = not args.dont_normalize_gradients
 
-    print("Running prediction/mitigation on intersection with hyperparameters:")
-    print(f"\tmodel_path = {args.model_path}")
-    print(f"\timage dimensions (w x h) = {args.image_w} x {args.image_h}")
-    print(f"\tnoise_scale = {noise_scale}")
-    print(f"\tfailure_level = {failure_level}")
-    print(f"\tT = {T}")
-    print(f"\tseed = {seed}")
-    print(f"\tL = {L}")
-    print(f"\tdp_logprior_scale = {dp_logprior_scale}")
-    print(f"\tdp_mcmc_step_size = {dp_mcmc_step_size}")
-    print(f"\tep_mcmc_step_size = {ep_mcmc_step_size}")
-    print(f"\tnum_rounds = {num_rounds}")
-    print(f"\tnum_steps_per_round = {num_steps_per_round}")
-    print(f"\tnum_chains = {num_chains}")
-    print(f"\tuse_gradients = {use_gradients}")
-    print(f"\tuse_stochasticity = {use_stochasticity}")
-    print(f"\tuse_mh = {use_mh}")
-    print(f"\trepair = {repair}")
-    print(f"\tpredict = {predict}")
-    print(f"\ttemper = {temper}")
-    print(f"\tquench_rounds = {quench_rounds}")
-    print(f"\tgrad_clip = {grad_clip}")
-    print(f"\tnormalize_gradients = {normalize_gradients}")
-    print(
-        f"Using alternative algorithm? {reinforce}",
-        f"(reinforce = {reinforce})",
+    quench_dps_only = False
+    if reinforce:
+        alg_type = "reinforce_l2c_0.05_step"
+    elif use_gradients and use_stochasticity and use_mh and not zero_order_gradients:
+        alg_type = "mala"
+        quench_dps_only = True
+    elif use_gradients and use_stochasticity and use_mh and zero_order_gradients:
+        alg_type = "mala_zo"
+        quench_dps_only = True
+    elif use_gradients and use_stochasticity and not use_mh:
+        alg_type = "ula"
+    elif use_gradients and not use_stochasticity:
+        alg_type = "gd"
+    elif not use_gradients and use_stochasticity and use_mh:
+        alg_type = "rmh"
+    elif not use_gradients and use_stochasticity and not use_mh:
+        alg_type = "random_walk"
+    else:
+        alg_type = "static"
+
+    # Initialize logger
+    wandb.init(
+        project=args.savename,
+        group=alg_type
+        + ("-predict" if predict else "")
+        + ("-repair" if repair else ""),
+        config={
+            "L": L,
+            "noise_scale": noise_scale,
+            "failure_level": failure_level,
+            "T": T,
+            "seed": seed,
+            "dp_logprior_scale": dp_logprior_scale,
+            "dp_mcmc_step_size": dp_mcmc_step_size,
+            "ep_mcmc_step_size": ep_mcmc_step_size,
+            "num_rounds": num_rounds,
+            "num_steps_per_round": num_steps_per_round,
+            "num_chains": num_chains,
+            "use_gradients": use_gradients,
+            "use_stochasticity": use_stochasticity,
+            "use_mh": use_mh,
+            "reinforce": reinforce,
+            "zero_order_gradients": zero_order_gradients,
+            "repair": repair,
+            "predict": predict,
+            "temper": temper,
+            "quench_rounds": quench_rounds,
+            "grad_clip": grad_clip,
+            "normalize_gradients": normalize_gradients,
+            "num_stress_test_cases": num_stress_test_cases,
+            "quench_dps_only": quench_dps_only,
+        },
     )
 
     # Add exponential tempering if using
@@ -399,17 +488,56 @@ if __name__ == "__main__":
     prng_key, initial_state_key = jrandom.split(prng_key)
     initial_state = env.reset(initial_state_key)
 
+    # The nominal non-ego behavior is to drive straight
+    drive_straight_left2right = LinearTrajectory2D(
+        p=jnp.array(
+            [
+                [0.0, -10.0],
+                [0.0, -20.0],
+                [0.0, -30.0],
+                [0.0, -40.0],
+                [0.0, -50.0],
+            ]
+        )
+    )
+    drive_straight_right2left = LinearTrajectory2D(
+        p=jnp.array(
+            [
+                [0.0, 10.0],
+                [0.0, 20.0],
+                [0.0, 30.0],
+                [0.0, 40.0],
+                [0.0, 50.0],
+            ]
+        )
+    )
+    nominal_trajectory = MultiAgentTrajectoryLinear(
+        trajectories=[
+            drive_straight_left2right,
+            drive_straight_left2right,
+            drive_straight_right2left,
+        ]
+    )
+
     # Initialize some random non-ego action trajectories as exogenous parameters
     prng_key, ep_key = jrandom.split(prng_key)
     ep_keys = jrandom.split(ep_key, num_chains)
     initial_eps = jax.vmap(
-        lambda key: sample_non_ego_actions(key, env, T, 3, noise_scale)
+        lambda key: sample_non_ego_trajectory(key, nominal_trajectory, noise_scale)
+    )(ep_keys)
+
+    # Also initialize a bunch of exogenous parameters to serve as stress test cases
+    # for the policy
+    prng_key, ep_key = jrandom.split(prng_key)
+    ep_keys = jrandom.split(ep_key, num_stress_test_cases)
+    stress_test_eps = jax.vmap(
+        lambda key: sample_non_ego_trajectory(key, nominal_trajectory, noise_scale)
     )(ep_keys)
 
     # Choose which sampler to use
     if reinforce:
         init_sampler_fn = init_reinforce_sampler
-        make_kernel_fn = lambda logprob_fn, step_size, _: make_reinforce_kernel(
+        make_kernel_fn = lambda _1, logprob_fn, step_size, _2: make_reinforce_kernel(
             logprob_fn,
             step_size,
             perturbation_stddev=noise_scale,
@@ -422,33 +550,29 @@ if __name__ == "__main__":
             params,
             logprob_fn,
             normalize_gradients,
+            gradient_clip=grad_clip,
+            estimate_gradients=zero_order_gradients,
         )
-        make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-            logprob_fn,
-            step_size,
-            use_gradients,
-            stochasticity,
-            grad_clip,
-            normalize_gradients,
-            use_mh,
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                normalize_gradients,
+                use_mh,
+                zero_order_gradients,
+            )
         )
 
-    quench_dps = False
-    if reinforce:
-        alg_type = "reinforce_l2c_0.05_step"
-    elif use_gradients and use_stochasticity and use_mh:
-        alg_type = "mala"
-        quench_dps = True
-    elif use_gradients and use_stochasticity and not use_mh:
-        alg_type = "ula"
-    elif use_gradients and not use_stochasticity:
-        alg_type = "gd"
-    elif not use_gradients and use_stochasticity and use_mh:
-        alg_type = "rmh"
-    elif not use_gradients and use_stochasticity and not use_mh:
-        alg_type = "random_walk"
-    else:
-        alg_type = "static"
+    # Adjust scaling based on the dimension of the dps and eps
+    dp_dimensions = jax.flatten_util.ravel_pytree(initial_dps)[0].shape[0] / num_chains
+    ep_dimensions = jax.flatten_util.ravel_pytree(initial_eps)[0].shape[0] / num_chains
+    print(f"dp_dimensions: {dp_dimensions}")
+    print(f"ep_dimensions: {ep_dimensions}")
+    L_dp = L * dp_dimensions
+    L_ep = L * ep_dimensions
 
     # Run the prediction+mitigation process
     t_start = time.perf_counter()
@@ -457,13 +581,15 @@ if __name__ == "__main__":
         initial_dps,
         initial_eps,
         dp_logprior_fn=dp_prior_logprob,
-        ep_logprior_fn=lambda ep: non_ego_actions_prior_logprob(ep, env, noise_scale),
-        ep_potential_fn=lambda dp, ep: -L
+        ep_logprior_fn=lambda ep: non_ego_trajectory_prior_logprob(
+            ep, nominal_trajectory, noise_scale
+        ),
+        ep_potential_fn=lambda dp, ep: -L_ep
         * jax.nn.elu(
             failure_level
             - simulate(env, dp, initial_state, ep, static_policy, T).potential
         ),
-        dp_potential_fn=lambda dp, ep: -L
+        dp_potential_fn=lambda dp, ep: -L_dp
         * jax.nn.elu(
             simulate(env, dp, initial_state, ep, static_policy, T).potential
             - failure_level
@@ -478,9 +604,16 @@ if __name__ == "__main__":
         repair=repair,
         predict=predict,
         quench_rounds=quench_rounds,
-        quench_dps=quench_dps,
+        quench_dps_only=quench_dps_only,
         tempering_schedule=tempering_schedule,
         logging_prefix=f"{args.savename}/{alg_type}[{os.getpid()}]",
+        stress_test_cases=stress_test_eps,
+        potential_fn=lambda dp, ep: simulate(
+            env, dp, initial_state, ep, static_policy, T
+        ).potential,
+        failure_level=failure_level,
+        plotting_cb=plotting_cb,
+        test_every=5,
     )
     t_end = time.perf_counter()
     print(
@@ -508,118 +641,7 @@ if __name__ == "__main__":
     # ep_logprobs = jnp.zeros((num_rounds, num_chains))
     # # TODO debugging bit ends here
 
-    # Evaluate the solutions proposed by the prediction+mitigation algorithm
-    result = eqx.filter_vmap(
-        lambda dp, ep: simulate(env, dp, initial_state, ep, static_policy, T),
-        in_axes=(None, 0),
-    )(final_dps, final_eps)
-
-    # Plot the results
-    fig = plt.figure(figsize=(32, 16), constrained_layout=True)
-    axs = fig.subplot_mosaic(
-        [
-            ["trace", "trace", "trace", "trajectory", "trajectory"],
-            ["trace", "trace", "trace", "trajectory", "trajectory"],
-            ["trace", "trace", "trace", "trajectory", "trajectory"],
-            ["final_obs", "final_obs", "final_obs", "final_obs", "final_obs"],
-            ["reward", "reward", "reward", "reward", "reward"],
-        ],
-    )
-
-    # Plot the chain convergence
-    if predict:
-        axs["trace"].plot(ep_logprobs)
-        axs["trace"].set_ylabel("Log probability after contingency update")
-    else:
-        axs["trace"].plot(dp_logprobs)
-        axs["trace"].set_ylabel("Log probability after repair")
-
-    axs["trace"].set_xlabel("# Samples")
-
-    # Plot the trajectories for each case, color-coded by potential
-    max_potential = jnp.max(result.potential)
-    min_potential = jnp.min(result.potential)
-    normalized_potential = (result.potential - min_potential) / (
-        max_potential - min_potential
-    )
-    axs["trajectory"].plot([-7.5 - 15, -7.5, -7.5], [7.5, 7.5, 7.5 + 15], "k--")
-    axs["trajectory"].plot([-7.5 - 15, -7.5, -7.5], [-7.5, -7.5, -7.5 - 15], "k--")
-    axs["trajectory"].plot([7.5 + 15, 7.5, 7.5], [7.5, 7.5, 7.5 + 15], "k--")
-    axs["trajectory"].plot([7.5 + 15, 7.5, 7.5], [-7.5, -7.5, -7.5 - 15], "k--")
-    axs["trajectory"].set_xlim([-7.5 - 15, 7.5 + 15])
-    axs["trajectory"].set_ylim([-7.5 - 15, 7.5 + 15])
-    for chain_idx in range(num_chains):
-        axs["trajectory"].plot(
-            result.ego_trajectory[chain_idx, :, 0].T,
-            result.ego_trajectory[chain_idx, :, 1].T,
-            linestyle="-",
-            color=plt.cm.plasma(normalized_potential[chain_idx]),
-            label="Ego" if chain_idx == 0 else None,
-        )
-        axs["trajectory"].plot(
-            result.non_ego_trajectory[chain_idx, :, 0, 0],
-            result.non_ego_trajectory[chain_idx, :, 0, 1],
-            linestyle="-.",
-            color=plt.cm.plasma(normalized_potential[chain_idx]),
-            label="Non-ego 1" if chain_idx == 0 else None,
-        )
-        axs["trajectory"].scatter(
-            result.non_ego_trajectory[chain_idx, 0, 0, 0],
-            result.non_ego_trajectory[chain_idx, 0, 0, 1],
-            marker="o",
-            color="k",
-        )
-        axs["trajectory"].plot(
-            result.non_ego_trajectory[chain_idx, :, 1, 0],
-            result.non_ego_trajectory[chain_idx, :, 1, 1],
-            linestyle="--",
-            color=plt.cm.plasma(normalized_potential[chain_idx]),
-            label="Non-ego 2" if chain_idx == 0 else None,
-        )
-        axs["trajectory"].scatter(
-            result.non_ego_trajectory[chain_idx, 0, 1, 0],
-            result.non_ego_trajectory[chain_idx, 0, 1, 1],
-            marker="o",
-            color="k",
-        )
-        axs["trajectory"].plot(
-            result.non_ego_trajectory[chain_idx, :, 2, 0],
-            result.non_ego_trajectory[chain_idx, :, 2, 1],
-            linestyle="--",
-            color=plt.cm.plasma(normalized_potential[chain_idx]),
-            label="Non-ego 3" if chain_idx == 0 else None,
-        )
-        axs["trajectory"].scatter(
-            result.non_ego_trajectory[chain_idx, 0, 2, 0],
-            result.non_ego_trajectory[chain_idx, 0, 2, 1],
-            marker="o",
-            color="k",
-        )
-    axs["trajectory"].set_aspect("equal")
-
-    # Plot the reward across all failure cases
-    axs["reward"].plot(result.potential, "ko")
-    axs["reward"].set_ylabel("Potential (negative min reward)")
-
-    # Plot the final RGB observations tiled on the same subplot
-    axs["final_obs"].imshow(
-        jnp.concatenate(result.final_obs.color_image.transpose(0, 2, 1, 3), axis=1)
-    )
-
-    if reinforce:
-        alg_type = "reinforce_l2c"
-    elif use_gradients and use_stochasticity and use_mh:
-        alg_type = "mala"
-    elif use_gradients and use_stochasticity and not use_mh:
-        alg_type = "ula"
-    elif use_gradients and not use_stochasticity:
-        alg_type = "gd"
-    elif not use_gradients and use_stochasticity and use_mh:
-        alg_type = "rmh"
-    elif not use_gradients and use_stochasticity and not use_mh:
-        alg_type = "random_walk"
-    else:
-        alg_type = "static"
+    # Figure out where to save
     save_dir = (
         f"results/{args.savename}/{'predict' if predict else ''}"
         f"{'_' if repair else ''}{'repair_' + str(dp_logprior_scale) if repair else ''}/"
@@ -636,7 +658,6 @@ if __name__ == "__main__":
     filename += f"_{seed}"
     print(f"Saving results to: {filename}")
     os.makedirs(save_dir, exist_ok=True)
-    plt.savefig(filename + ".png")
 
     # Save the final design parameters (joined back into the full policy)
     final_policy = eqx.combine(final_dps, static_policy)

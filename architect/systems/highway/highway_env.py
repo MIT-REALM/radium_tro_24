@@ -1,4 +1,5 @@
 """Manage the state of the ego car and all other vehicles on the highway."""
+
 import jax
 import jax.nn
 import jax.numpy as jnp
@@ -75,6 +76,7 @@ class HighwayEnv:
             any obstacle in the scene.
         max_render_dist: the maximum distance to render in the depth image.
         render_sharpness: the sharpness of the scene.
+        anti_alias_samples: the number of samples to use for anti-aliasing.
     """
 
     _highway_scene: HighwayScene
@@ -91,8 +93,7 @@ class HighwayEnv:
 
     _axle_length: float = 1.0
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __init__(
         self,
         highway_scene: HighwayScene,
@@ -106,10 +107,10 @@ class HighwayEnv:
         collision_penalty: float = 50.0,
         max_render_dist: float = 30.0,
         render_sharpness: float = 100.0,
+        anti_alias_samples: int = 1,
     ):
         """Initialize the environment."""
         self._highway_scene = highway_scene
-        self._camera_intrinsics = camera_intrinsics
         self._dt = dt
         self._initial_ego_state = initial_ego_state
         self._initial_non_ego_states = initial_non_ego_states
@@ -120,8 +121,18 @@ class HighwayEnv:
         self._max_render_dist = max_render_dist
         self._render_sharpness = render_sharpness
 
-    @jaxtyped
-    @beartype
+        # Increase the resolution so we can down-sample later to anti-alias
+        self._camera_intrinsics = CameraIntrinsics(
+            resolution=(
+                camera_intrinsics.resolution[0] * anti_alias_samples,
+                camera_intrinsics.resolution[1] * anti_alias_samples,
+            ),
+            focal_length=camera_intrinsics.focal_length,
+            sensor_size=camera_intrinsics.sensor_size,
+        )
+        self._anti_alias_samples = anti_alias_samples
+
+    @jaxtyped(typechecker=beartype)
     def car_dynamics(
         self,
         state: Float[Array, " n_states"],
@@ -157,14 +168,15 @@ class HighwayEnv:
 
         return jnp.array([x_next, y_next, theta_next, v_next])
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def step(
         self,
         state: HighwayState,
         ego_action: Float[Array, " n_actions"],
         non_ego_actions: Float[Array, "n_non_ego n_actions"],
         key: PRNGKeyArray,
+        reset: bool = True,
+        collision_sharpness: float = 5.0,
     ) -> Tuple[HighwayState, HighwayObs, Float[Array, ""], Bool[Array, ""]]:
         """Take a step in the environment.
 
@@ -178,6 +190,8 @@ class HighwayEnv:
             non_ego_actions: the control action to take for all other vehicles
                 (acceleration and steering angle)
             key: a random number generator key
+            reset: whether to reset the environment.
+            collision_sharpness: how sharp to make the collision penalty
 
         Returns:
             The next state of the environment, the observations, the reward, and a
@@ -205,9 +219,10 @@ class HighwayEnv:
             next_ego_state[:3],  # trim out speed; not needed for collision checking
             next_non_ego_states[:, :3],
             self._render_sharpness,
+            include_ground=False,
         )
         collision_reward = -self._collision_penalty * jax.nn.sigmoid(
-            -5 * min_distance_to_obstacle
+            -collision_sharpness * min_distance_to_obstacle
         )
         distance_reward = 1.0 * (next_ego_state[0] - ego_state[0]) / self._dt
         # lane_keeping_reward = (
@@ -220,7 +235,7 @@ class HighwayEnv:
         # environment (or if we run out of road)
         done = jnp.logical_or(min_distance_to_obstacle < 0.0, next_ego_state[0] > 90.0)
         next_state = jax.lax.cond(
-            done,
+            jnp.logical_and(done, reset),
             lambda: self.reset(key),
             lambda: next_state,
         )
@@ -230,8 +245,7 @@ class HighwayEnv:
 
         return next_state, obs, reward, done
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def reset(self, key: PRNGKeyArray) -> HighwayState:
         """Reset the environment.
 
@@ -260,8 +274,7 @@ class HighwayEnv:
             non_ego_colors=non_ego_colors,
         )
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def get_obs(self, state: HighwayState) -> HighwayObs:
         """Get the observation from the given state.
 
@@ -292,6 +305,26 @@ class HighwayEnv:
             shading_light_direction=state.shading_light_direction,
             car_colors=state.non_ego_colors,
         )
+
+        # Down-sample the image to anti-alias
+        depth_image = jax.image.resize(
+            depth_image,
+            (
+                self._camera_intrinsics.resolution[0] // self._anti_alias_samples,
+                self._camera_intrinsics.resolution[1] // self._anti_alias_samples,
+            ),
+            method=jax.image.ResizeMethod.LINEAR,
+        )
+        color_image = jax.image.resize(
+            color_image,
+            (
+                self._camera_intrinsics.resolution[0] // self._anti_alias_samples,
+                self._camera_intrinsics.resolution[1] // self._anti_alias_samples,
+                3,
+            ),
+            method=jax.image.ResizeMethod.LINEAR,
+        )
+
         obs = HighwayObs(
             speed=ego_v,
             depth_image=depth_image,
@@ -300,8 +333,7 @@ class HighwayEnv:
         )
         return obs
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_initial_ego_state(self, key: PRNGKeyArray) -> Float[Array, " n_states"]:
         """Sample an initial state for the ego vehicle.
 
@@ -316,8 +348,7 @@ class HighwayEnv:
         )
         return initial_state
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def initial_ego_state_prior_logprob(
         self,
         state: Float[Array, " n_states"],
@@ -335,8 +366,7 @@ class HighwayEnv:
         )
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_initial_non_ego_states(
         self, key: PRNGKeyArray
     ) -> Float[Array, "n_non_ego n_states"]:
@@ -358,8 +388,7 @@ class HighwayEnv:
         )
         return initial_states
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def initial_non_ego_states_prior_logprob(
         self,
         state: Float[Array, "n_non_ego n_states"],
@@ -383,8 +412,7 @@ class HighwayEnv:
         )
         return initial_state_logprobs.sum()
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_non_ego_actions(
         self,
         key: PRNGKeyArray,
@@ -407,8 +435,7 @@ class HighwayEnv:
         )
         return action
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def non_ego_actions_prior_logprob(
         self,
         action: Float[Array, "n_non_ego n_actions"],
@@ -430,8 +457,7 @@ class HighwayEnv:
         logprobs = jax.vmap(logprob_fn)(action)
         return logprobs.sum()
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_shading_light_direction(self, key: PRNGKeyArray) -> Float[Array, " 3"]:
         """Sample light direction.
 
@@ -448,8 +474,7 @@ class HighwayEnv:
         )
         return direction
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def shading_light_direction_prior_logprob(
         self,
         direction: Float[Array, " 3"],
@@ -469,8 +494,7 @@ class HighwayEnv:
         )
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_non_ego_colors(self, key: PRNGKeyArray) -> Float[Array, "n_non_ego 3"]:
         """Sample RGB colors for each non-ego agent uniformly at random.
 
@@ -484,8 +508,7 @@ class HighwayEnv:
         color = jax.random.uniform(key, shape=(n_non_ego, 3))
         return color
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def non_ego_colors_prior_logprob(
         self,
         color: Float[Array, "n_non_ego 3"],
@@ -511,8 +534,7 @@ class HighwayEnv:
         logprob = log_smooth_uniform(color, 0.0, 1.0).sum()
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def overall_prior_logprob(self, state: HighwayState) -> Float[Array, ""]:
         """Compute the overall prior logprobability of the given initial state"""
         return (

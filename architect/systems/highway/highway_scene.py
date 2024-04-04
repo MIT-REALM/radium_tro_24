@@ -1,4 +1,5 @@
 """Define a highway scene with a variable number of lanes and cars."""
+
 import jax
 import jax.numpy as jnp
 from beartype import beartype
@@ -47,6 +48,8 @@ class Car(NamedTuple):
     r_wheel: Float[Array, ""] = jnp.array(0.4)  # radius of wheel
     w_wheel: Float[Array, ""] = jnp.array(0.3)  # width of wheel
 
+    rounding: Float[Array, ""] = jnp.array(0.1)  # box rounding
+
     @property
     def length(self):
         return self.l_hood + self.l_trunk + self.l_cabin
@@ -59,8 +62,7 @@ class Car(NamedTuple):
     def height(self):
         return self.h_base + self.h_chassis + self.h_top
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def get_shapes(
         self,
         state: Float[Array, " 3"],
@@ -98,7 +100,7 @@ class Car(NamedTuple):
             ),
             rotation=rotation,
             c=color,
-            rounding=jnp.array(0.1),
+            rounding=self.rounding,
         )
         cab = Box(
             center=jnp.array(
@@ -117,7 +119,7 @@ class Car(NamedTuple):
             ),
             rotation=rotation,
             c=jnp.array([255, 244, 236]) / 255.0,
-            rounding=jnp.array(0.3),
+            rounding=self.rounding,
         )
 
         l_all = self.l_cabin + self.l_trunk + self.l_hood
@@ -220,13 +222,13 @@ class HighwayScene:
         self.car = Car()  # re-used for all cars
         self.lane_width = lane_width
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def _get_shapes(
         self,
         car_states: Float[Array, "n_car 3"],
         sharpness: float = 100.0,
         car_colors: Optional[Float[Array, "n_car 3"]] = None,
+        include_ground: bool = True,
     ) -> SDFShape:
         """Return an SDF representation this scene.
 
@@ -234,6 +236,7 @@ class HighwayScene:
             car_states: the [x, y, heading] state of each car in the scene
             sharpness: the sharpness of the SDF shapes
             car_colors: the color of each car. If None, the default colors are used.
+            include_ground: whether to include the ground plane
         """
         if car_colors is None:
             car_shapes = [self.car.get_shapes(state) for state in car_states]
@@ -243,21 +246,21 @@ class HighwayScene:
                 for state, color in zip(car_states, car_colors)
             ]
 
-        shapes = (
-            []
-            + [self.ground]
-            + self.walls
-            + [shape for sublist in car_shapes for shape in sublist]
-        )
+        shapes = []
+        shapes += [shape for sublist in car_shapes for shape in sublist]
+        shapes += self.walls
+        if include_ground:
+            shapes.append(self.ground)
+
         return Scene(shapes=shapes, sharpness=sharpness)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def check_for_collision(
         self,
         collider_state: Float[Array, " 3"],
         scene_car_states: Float[Array, "n_car 3"],
         sharpness: float = 100.0,
+        include_ground: bool = True,
     ) -> Float[Array, ""]:
         """Check for collision with any obstacle in the scene.
 
@@ -267,12 +270,15 @@ class HighwayScene:
                 there will always be a collision).
             scene_car_states: the [x, y, heading] state of each car in the scene
             sharpness: the sharpness of the SDF shapes
+            include_ground: whether to include the ground plane
 
         Returns:
             The minimum distance from the car to any obstacle in the scene.
         """
         # Make the scene (a composite of SDF shapes)
-        scene = self._get_shapes(scene_car_states)
+        scene = self._get_shapes(
+            scene_car_states, sharpness=sharpness, include_ground=include_ground
+        )
 
         # Check for collision at four points on the car
         car_R_to_world = jnp.array(
@@ -294,10 +300,10 @@ class HighwayScene:
         collider_pts_world = collider_pts_world.at[:, :2].add(collider_state[:2])
 
         # Return the minimum distance to any obstacle (negative if there's a collision)
-        return jax.vmap(scene)(collider_pts_world).min()
+        min_distance = jax.vmap(scene)(collider_pts_world).min()
+        return min_distance
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_depth(
         self,
         intrinsics: CameraIntrinsics,
@@ -331,8 +337,7 @@ class HighwayScene:
         ).reshape(intrinsics.resolution)
         return depth_image
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_rgbd(
         self,
         intrinsics: CameraIntrinsics,
@@ -364,7 +369,7 @@ class HighwayScene:
         # Render the scene
         rays = pinhole_camera_rays(intrinsics, extrinsics)
         hit_pts = jax.vmap(raycast, in_axes=(None, None, 0, None, None))(
-            scene, extrinsics.camera_origin, rays, 100, 200.0
+            scene, extrinsics.camera_origin, rays, 200, 200.0
         )
         depth_image = render_depth(
             hit_pts, intrinsics, extrinsics, max_dist=max_dist

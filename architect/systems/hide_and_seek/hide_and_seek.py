@@ -9,6 +9,7 @@ from architect.systems.hide_and_seek.hide_and_seek_types import (
     HideAndSeekResult,
     MultiAgentTrajectory,
 )
+from architect.utils import softclip
 
 
 @jax.jit
@@ -22,8 +23,7 @@ def softnorm(x):
     return jax.lax.cond(jnp.linalg.norm(x) >= eps, jnp.linalg.norm, scaled_square, x)
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 class Game(eqx.Module):
     """
     The hide and seek game engine
@@ -52,11 +52,13 @@ class Game(eqx.Module):
 
     b: float = 100
 
+    width: float = 3.0
+    height: float = 2.0
+
     def softmin(self, x: Float[Array, "..."]) -> Float[Array, ""]:
         return -1 / self.b * logsumexp(-self.b * x)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __call__(
         self,
         seeker_trajectory: MultiAgentTrajectory,
@@ -84,6 +86,20 @@ class Game(eqx.Module):
             hider_target = hider_trajectory(t / self.duration)
             seeker_disturbance = seeker_disturbance_trace(t / self.duration)
             seeker_disturbance = jax.nn.tanh(seeker_disturbance) * max_disturbance
+
+            # Clamp the targets to be inside the arena (soft clip)
+            seeker_target = seeker_target.at[:, 0].set(
+                softclip(seeker_target[:, 0], self.width / 2.0)
+            )
+            seeker_target = seeker_target.at[:, 1].set(
+                softclip(seeker_target[:, 1], self.height / 2.0)
+            )
+            hider_target = hider_target.at[:, 0].set(
+                softclip(hider_target[:, 0], self.width / 2.0)
+            )
+            hider_target = hider_target.at[:, 1].set(
+                softclip(hider_target[:, 1], self.height / 2.0)
+            )
 
             # Steer towards these targets (clip with max speeds)
             v_seeker = seeker_target - current_seeker_positions
@@ -142,10 +158,20 @@ class Game(eqx.Module):
 
         # Compute the cost as the (smoothed) minimum squared distance between each hider
         # and its closest seeker
-        hider_to_closest_seeker_distance = jax.vmap(self.softmin)(
+        softmin_hider_to_closest_seeker_distance = jax.vmap(self.softmin)(
             hider_to_closest_seeker_distance.T
         )
-        cost = jax.nn.elu(hider_to_closest_seeker_distance - self.sensing_range).sum()
+        # cost = jax.nn.celu(
+        #     (softmin_hider_to_closest_seeker_distance - self.sensing_range)
+        #     / self.sensing_range,
+        #     alpha=1.0,
+        # ).mean()
+        cost = -self.softmin(  # max distance outside sensing range
+            -(softmin_hider_to_closest_seeker_distance - self.sensing_range)
+        )
+        num_escaped_hiders = (
+            softmin_hider_to_closest_seeker_distance > self.sensing_range
+        ).sum()
 
         return HideAndSeekResult(
             seeker_trajectory=seeker_trajectory,
@@ -154,4 +180,5 @@ class Game(eqx.Module):
             seeker_positions=seeker_positions,
             hider_positions=hider_positions,
             potential=cost,
+            escaped=num_escaped_hiders,
         )

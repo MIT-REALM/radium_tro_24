@@ -1,8 +1,9 @@
 """Define a drone landing scene with a variable number of trees and cars."""
+
 import jax
 import jax.numpy as jnp
 from beartype import beartype
-from beartype.typing import List, NamedTuple, Optional, Tuple
+from beartype.typing import List, Optional, Tuple
 from jaxtyping import Array, Float, jaxtyped
 
 from architect.systems.components.sensing.vision.render import (
@@ -99,8 +100,7 @@ class DroneLandingScene:
             ),
         ]
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def _get_shapes(
         self,
         wind_direction_xy: Float[Array, "2"],
@@ -191,8 +191,7 @@ class DroneLandingScene:
         shapes += drone_shapes
         return Scene(shapes=shapes, sharpness=sharpness)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def check_for_collision(
         self,
         collider_state: Float[Array, " 3"],
@@ -217,8 +216,7 @@ class DroneLandingScene:
         # Return the minimum distance to any obstacle (negative if there's a collision)
         return scene(collider_state) - 0.05  # radius of drone
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_rgbd(
         self,
         intrinsics: CameraIntrinsics,
@@ -279,8 +277,6 @@ class DroneLandingScene:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-
-    from architect.systems.components.sensing.vision.util import look_at
 
     # Create a test scene and render it
     scene = DroneLandingScene()

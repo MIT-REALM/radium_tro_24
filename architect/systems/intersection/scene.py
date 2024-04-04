@@ -1,8 +1,9 @@
 """Define an intersection scene."""
+
 import jax
 import jax.numpy as jnp
 from beartype import beartype
-from beartype.typing import List, NamedTuple, Optional, Tuple
+from beartype.typing import List, Optional, Tuple
 from jaxtyping import Array, Float, jaxtyped
 
 from architect.systems.components.sensing.vision.render import (
@@ -16,7 +17,6 @@ from architect.systems.components.sensing.vision.render import (
 )
 from architect.systems.components.sensing.vision.shapes import (
     Box,
-    Cylinder,
     Halfspace,
     Scene,
     SDFShape,
@@ -101,13 +101,13 @@ class IntersectionScene:
         ]
         self.car = Car()  # re-used for all cars
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def _get_shapes(
         self,
         car_states: Float[Array, "n_car 3"],
         sharpness: float = 100.0,
         car_colors: Optional[Float[Array, "n_car 3"]] = None,
+        include_ground: bool = True,
     ) -> SDFShape:
         """Return an SDF representation this scene.
 
@@ -115,6 +115,7 @@ class IntersectionScene:
             car_states: the [x, y, heading] state of each car in the scene
             sharpness: the sharpness of the SDF shapes
             car_colors: the color of each car. If None, the default colors are used.
+            include_ground: whether to include the ground plane in the scene
         """
         if car_colors is None:
             car_shapes = [self.car.get_shapes(state) for state in car_states]
@@ -124,21 +125,21 @@ class IntersectionScene:
                 for state, color in zip(car_states, car_colors)
             ]
 
-        shapes = (
-            []
-            + [self.ground]
-            + self.walls
-            + [shape for sublist in car_shapes for shape in sublist]
-        )
+        shapes = []
+        shapes += [shape for sublist in car_shapes for shape in sublist]
+        shapes += self.walls
+        if include_ground:
+            shapes.append(self.ground)
+
         return Scene(shapes=shapes, sharpness=sharpness)
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def check_for_collision(
         self,
         collider_state: Float[Array, " 3"],
         scene_car_states: Float[Array, "n_car 3"],
         sharpness: float = 100.0,
+        include_ground: bool = True,
     ) -> Float[Array, ""]:
         """Check for collision with any obstacle in the scene.
 
@@ -148,12 +149,15 @@ class IntersectionScene:
                 there will always be a collision).
             scene_car_states: the [x, y, heading] state of each car in the scene
             sharpness: the sharpness of the SDF shapes
+            include_ground: whether to include the ground plane in the scene
 
         Returns:
             The minimum distance from the car to any obstacle in the scene.
         """
         # Make the scene (a composite of SDF shapes)
-        scene = self._get_shapes(scene_car_states)
+        scene = self._get_shapes(
+            scene_car_states, sharpness, include_ground=include_ground
+        )
 
         # Check for collision at four points on the car
         car_R_to_world = jnp.array(
@@ -177,8 +181,7 @@ class IntersectionScene:
         # Return the minimum distance to any obstacle (negative if there's a collision)
         return jax.vmap(scene)(collider_pts_world).min()
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_depth(
         self,
         intrinsics: CameraIntrinsics,
@@ -205,15 +208,14 @@ class IntersectionScene:
         # Render the scene
         rays = pinhole_camera_rays(intrinsics, extrinsics)
         hit_pts = jax.vmap(raycast, in_axes=(None, None, 0))(
-            scene, extrinsics.camera_origin, rays
+            scene, extrinsics.camera_origin, rays, 300, 200.0
         )
         depth_image = render_depth(
             hit_pts, intrinsics, extrinsics, max_dist=max_dist
         ).reshape(intrinsics.resolution)
         return depth_image
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def render_rgbd(
         self,
         intrinsics: CameraIntrinsics,
@@ -245,7 +247,7 @@ class IntersectionScene:
         # Render the scene
         rays = pinhole_camera_rays(intrinsics, extrinsics)
         hit_pts = jax.vmap(raycast, in_axes=(None, None, 0, None, None))(
-            scene, extrinsics.camera_origin, rays, 100, 200.0
+            scene, extrinsics.camera_origin, rays, 300, 200.0
         )
         depth_image = render_depth(
             hit_pts, intrinsics, extrinsics, max_dist=max_dist

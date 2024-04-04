@@ -1,4 +1,5 @@
 """Implement sampling algorithms"""
+
 import operator
 
 import jax
@@ -13,8 +14,7 @@ from jaxtyping import Array, Bool, Float, Integer, jaxtyped
 from architect.types import LogLikelihood, Params, PRNGKeyArray, Sampler
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class SamplerState(NamedTuple):
     """State for samplers."""
 
@@ -24,12 +24,92 @@ class SamplerState(NamedTuple):
     num_accepts: Integer[Array, ""]
 
 
-@jaxtyped
-@beartype
+def normalize_gradients_with_threshold(
+    gradients: Params,
+    threshold: Union[float, Float[Array, ""]],
+) -> Params:
+    """
+    Normalize the gradients to a threshold if they are larger than the threshold.
+
+    args:
+        gradients: the gradients to normalize
+        threshold: the threshold to normalize to
+    returns:
+        the normalized gradients
+    """
+    # Compute the L2 norm of the gradients
+    block_grad_norms_sq = jtu.tree_map(lambda x: jnp.sum(x**2), gradients)
+    grad_norm = jnp.sqrt(jtu.tree_reduce(operator.add, block_grad_norms_sq))
+
+    # Normalize the gradients if they are larger than the threshold
+    normalized_gradients = jax.lax.cond(
+        grad_norm > threshold,
+        lambda: jtu.tree_map(lambda x: x * threshold / grad_norm, gradients),
+        lambda: gradients,
+    )
+
+    return normalized_gradients
+
+
+@jaxtyped(typechecker=beartype)
+def weight_perturbation_gradient_estimator(
+    logdensity_fn: LogLikelihood,
+    position: Params,
+    step_size: Union[float, Float[Array, ""]],
+    key: PRNGKeyArray,
+    n_samples: Union[int, Integer[Array, ""]] = 8,
+) -> Params:
+    """
+    Estimate the gradient using a weight perturbation method.
+
+    args:
+        logdensity_fn: the non-normalized log likelihood function
+        position: the position to estimate the gradient at
+        step_size: the size of the step to take
+        key: the random key to use for the perturbation
+        n_samples: the number of samples to use in the estimate
+
+    returns:
+        the log density at the current position and the gradient estimate
+    """
+    # Compute the log density at the current position
+    logdensity = logdensity_fn(position)
+
+    # Make a function to get the gradient estimate from a single perturbation
+    def single_perturbation_estimate(subkey):
+        # Generate noise with the same shape as the position pytree
+        p, unravel_fn = jax.flatten_util.ravel_pytree(position)
+        sample = jrandom.normal(subkey, shape=p.shape, dtype=p.dtype)
+        perturbation = unravel_fn(sample)
+
+        # Compute the log density at the perturbed position
+        perturbed_position = jtu.tree_map(
+            lambda x, y: x + jnp.sqrt(2 * step_size) * y, position, perturbation
+        )
+        perturbed_logdensity = logdensity_fn(perturbed_position)
+
+        # Compute the gradient estimate
+        return jtu.tree_map(
+            lambda x, y: (perturbed_logdensity - logdensity) * y,
+            position,
+            perturbation,
+        )
+
+    # Compute the gradient estimate by averaging over several perturbations
+    keys = jrandom.split(key, n_samples)
+    gradient_estimate = jax.vmap(single_perturbation_estimate)(keys)
+    gradient_estimate = jtu.tree_map(lambda x: x.mean(axis=0), gradient_estimate)
+
+    return logdensity, gradient_estimate
+
+
+@jaxtyped(typechecker=beartype)
 def init_sampler(
     position: Params,
     logdensity_fn: LogLikelihood,
     normalize_gradients: Union[bool, Bool[Array, ""]] = True,
+    gradient_clip: Union[float, Float[Array, ""]] = float("inf"),
+    estimate_gradients: bool = False,
 ) -> SamplerState:
     """
     Initialize a sampler.
@@ -37,10 +117,24 @@ def init_sampler(
     args:
         position: the initial position of the sampler
         logdensity_fn: the non-normalized log likelihood function
-        normalize_gradients: if True, normalize gradients to have unit L2 norm
+        normalize_gradients: if True, normalize gradients to have clipped L2 norm
+        gradient_clip: maximum value to clip gradients
+        estimate_gradients: if True, estimate gradients using a weight perturbation
     """
+    # Generate noise with the same shape as the position pytree, so we can set the
+    # gradient clipping threshold appropriately
+    p, _ = jax.flatten_util.ravel_pytree(position)
+    sample = jrandom.normal(jrandom.PRNGKey(0), shape=p.shape, dtype=p.dtype)
+    noise_strength = jnp.linalg.norm(sample)
+
     grad_fn = jax.value_and_grad(logdensity_fn)
-    logdensity, logdensity_grad = grad_fn(position)
+
+    if estimate_gradients:
+        logdensity, logdensity_grad = weight_perturbation_gradient_estimator(
+            logdensity_fn, position, 1e-3, jrandom.PRNGKey(0)
+        )
+    else:
+        logdensity, logdensity_grad = grad_fn(position)
 
     # Drop nans
     logdensity_grad = jtu.tree_map(
@@ -48,34 +142,27 @@ def init_sampler(
     )
 
     # Normalize the gradients if requested
-    block_norms = jtu.tree_map(
-        lambda x: jnp.sqrt(jnp.sum(x**2) + 1e-3), logdensity_grad
-    )
-    block_norms = jtu.tree_map(lambda x: jnp.where(x >= 1.0, x, 1.0), block_norms)
-    normalized_logdensity_grad = jtu.tree_map(
-        lambda grad, block_norm: grad / block_norm,
-        logdensity_grad,
-        block_norms,
-    )
     logdensity_grad = jax.lax.cond(
         normalize_gradients,
-        lambda: normalized_logdensity_grad,
+        lambda: normalize_gradients_with_threshold(
+            logdensity_grad, noise_strength * gradient_clip
+        ),
         lambda: logdensity_grad,
     )
 
     return SamplerState(position, logdensity, logdensity_grad, jnp.array(0))
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def make_kernel(
     logdensity_fn: LogLikelihood,
     step_size: Union[float, Float[Array, ""]],
     use_gradients: Union[bool, Bool[Array, ""]] = True,
     use_stochasticity: Union[bool, Bool[Array, ""]] = True,
-    grad_clip: Union[float, Float[Array, ""]] = float("inf"),
+    gradient_clip: Union[float, Float[Array, ""]] = float("inf"),
     normalize_gradients: Union[bool, Bool[Array, ""]] = True,
     use_mh: Union[bool, Bool[Array, ""]] = True,
+    estimate_gradients: bool = False,
 ) -> Sampler:
     """
     Build a kernel for a sampling algorithm (either MALA, RMH, or MLE).
@@ -96,16 +183,16 @@ def make_kernel(
         step_size: the size of the step to take
         use_gradients: if True, use gradients in the proposal and acceptance steps
         use_stochasticity: if True, add a Gaussian to the proposal and acceptance steps
-        grad_clip: maximum value to clip gradients
+        gradient_clip: maximum value to clip gradients
         normalize_gradients: if True, normalize gradients to have unit L2 norm
         use_mh: if True, use Metropolis-Hastings acceptance, otherwise always accept
+        estimate_gradients: if True, estimate gradients using a weight perturbation
     """
     # A generic Metropolis-Hastings-style MCMC algorithm has 2 steps: a proprosal and
     # an accept/reject step.
 
     # Start by defining the proposal log likelihood
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def transition_log_probability(
         state: SamplerState,
         new_state: SamplerState,
@@ -118,9 +205,7 @@ def make_kernel(
         # If we're not using gradients, zero out the gradient in a JIT compatible way
         grad = jax.lax.cond(
             use_gradients,
-            lambda x: jtu.tree_map(
-                lambda v: jnp.clip(v, a_min=-grad_clip, a_max=grad_clip), x
-            ),
+            lambda x: x,
             lambda x: jtu.tree_map(jnp.zeros_like, x),
             state.logdensity_grad,
         )
@@ -138,12 +223,11 @@ def make_kernel(
         transition_log_probability = -0.25 * (1.0 / step_size) * theta_dot
         return transition_log_probability
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def one_step(prng_key: PRNGKeyArray, state: SamplerState) -> SamplerState:
         """Generate a new sample"""
         # Split the key
-        proposal_key, acceptance_key = jrandom.split(prng_key)
+        proposal_key, estimate_key, acceptance_key = jrandom.split(prng_key, 3)
 
         # Propose a new state
         delta_x = jtu.tree_map(
@@ -166,6 +250,7 @@ def make_kernel(
         # Generate noise with the same shape as the position pytree
         p, unravel_fn = jax.flatten_util.ravel_pytree(state.position)
         sample = jrandom.normal(proposal_key, shape=p.shape, dtype=p.dtype)
+        noise_strength = jnp.linalg.norm(sample)
         noise = unravel_fn(sample)
 
         # Add it to the change in state if using stochasticity
@@ -182,24 +267,27 @@ def make_kernel(
 
         # Make the state proposal
         new_position = jtu.tree_map(lambda x, dx: x + dx, state.position, delta_x)
-        new_logdensity, new_grad = jax.value_and_grad(logdensity_fn)(new_position)
+        if estimate_gradients:
+            new_logdensity, new_grad = weight_perturbation_gradient_estimator(
+                logdensity_fn,
+                new_position,
+                step_size,
+                estimate_key,
+            )
+        else:
+            new_logdensity, new_grad = jax.value_and_grad(logdensity_fn)(new_position)
 
         # Drop nans
         new_grad = jtu.tree_map(
             lambda grad: jnp.where(jnp.isnan(grad), 0.0, grad), new_grad
         )
 
-        # Normalize the gradients if requested
-        block_norms = jtu.tree_map(lambda x: jnp.sqrt(jnp.sum(x**2) + 1e-3), new_grad)
-        block_norms = jtu.tree_map(lambda x: jnp.where(x >= 1.0, x, 1.0), block_norms)
-        normalized_new_grad = jtu.tree_map(
-            lambda grad, block_norm: grad / block_norm,
-            new_grad,
-            block_norms,
-        )
+        # Normalize the gradients if requested.
         new_grad = jax.lax.cond(
             normalize_gradients,
-            lambda: normalized_new_grad,
+            lambda: normalize_gradients_with_threshold(
+                new_grad, noise_strength * gradient_clip
+            ),
             lambda: new_grad,
         )
 

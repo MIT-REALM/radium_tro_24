@@ -5,10 +5,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from beartype import beartype
-from beartype.typing import Tuple
 from jaxtyping import Array, Float, jaxtyped
 
-from architect.systems.drone_landing.env import DroneObs
 from architect.types import PRNGKeyArray
 
 
@@ -32,8 +30,7 @@ class AffordancePredictor(eqx.Module):
     fcn_2: eqx.nn.Linear
     fcn_3: eqx.nn.Linear
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __init__(
         self,
         key: PRNGKeyArray,

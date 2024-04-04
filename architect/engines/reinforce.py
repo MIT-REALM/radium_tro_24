@@ -1,7 +1,7 @@
 """Implement the reinforce optimization algorithm."""
+
 import jax
 import jax.flatten_util
-import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
 from beartype import beartype
@@ -11,8 +11,7 @@ from jaxtyping import Array, Float, jaxtyped
 from architect.types import LogLikelihood, Params, PRNGKeyArray, Sampler
 
 
-# @jaxtyped
-# @beartype  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
+# @jaxtyped(typechecker=beartype)  # Commented out until beartype 0.12.0 release (TODO@dawsonc)
 class ReinforceState(NamedTuple):
     """State for reinforce optimizer."""
 
@@ -21,8 +20,7 @@ class ReinforceState(NamedTuple):
     logdensity: Float[Array, ""]
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def init_sampler(
     position: Params,
     logdensity_fn: LogLikelihood,
@@ -40,8 +38,7 @@ def init_sampler(
     return ReinforceState(position, baseline=logdensity, logdensity=logdensity)
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def make_kernel(
     logdensity_fn: LogLikelihood,
     step_size: Union[float, Float[Array, ""]],
@@ -59,8 +56,7 @@ def make_kernel(
         baseline_update_rate: the rate at which to update the moving average baseline
     """
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def one_step(prng_key: PRNGKeyArray, state: ReinforceState) -> ReinforceState:
         """Generate a new sample"""
         # Generate noise with the same shape as the position pytree

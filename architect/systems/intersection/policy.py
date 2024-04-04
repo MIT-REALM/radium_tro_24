@@ -29,8 +29,7 @@ class DrivingPolicy(eqx.Module):
 
     log_action_std: Float[Array, ""]
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __init__(
         self,
         key: PRNGKeyArray,

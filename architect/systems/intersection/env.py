@@ -1,10 +1,11 @@
 """Manage the state of the ego car and all other vehicles on the highway."""
+
 import jax
 import jax.nn
 import jax.numpy as jnp
 import jax.random as jrandom
 from beartype import beartype
-from beartype.typing import NamedTuple, Tuple
+from beartype.typing import Tuple
 from jaxtyping import Array, Bool, Float, jaxtyped
 
 from architect.systems.components.sensing.vision.render import (
@@ -62,8 +63,7 @@ class IntersectionEnv:
 
     _axle_length: float = 1.0
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __init__(
         self,
         scene: IntersectionScene,
@@ -93,8 +93,7 @@ class IntersectionEnv:
         self._render_sharpness = render_sharpness
         self._substeps = substeps
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def car_dynamics(
         self,
         state: Float[Array, " n_states"],
@@ -130,8 +129,7 @@ class IntersectionEnv:
 
         return jnp.array([x_next, y_next, theta_next, v_next])
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def step(
         self,
         state: HighwayState,
@@ -190,6 +188,7 @@ class IntersectionEnv:
             next_ego_state[:3],  # trim out speed; not needed for collision checking
             next_non_ego_states[:, :3],
             self._render_sharpness,
+            include_ground=False,
         )
         collision_reward = -self._collision_penalty * jax.nn.sigmoid(
             -5 * min_distance_to_obstacle
@@ -233,8 +232,7 @@ class IntersectionEnv:
 
         return next_state, obs, reward, done
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def reset(self, key: PRNGKeyArray) -> HighwayState:
         """Reset the environment.
 
@@ -263,8 +261,7 @@ class IntersectionEnv:
             non_ego_colors=non_ego_colors,
         )
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def get_obs(self, state: HighwayState) -> HighwayObs:
         """Get the observation from the given state.
 
@@ -303,8 +300,7 @@ class IntersectionEnv:
         )
         return obs
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_initial_ego_state(self, key: PRNGKeyArray) -> Float[Array, " n_states"]:
         """Sample an initial state for the ego vehicle.
 
@@ -319,8 +315,7 @@ class IntersectionEnv:
         )
         return initial_state
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def initial_ego_state_prior_logprob(
         self,
         state: Float[Array, " n_states"],
@@ -338,8 +333,7 @@ class IntersectionEnv:
         )
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_initial_non_ego_states(
         self, key: PRNGKeyArray
     ) -> Float[Array, "n_non_ego n_states"]:
@@ -361,8 +355,7 @@ class IntersectionEnv:
         )
         return initial_states
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def initial_non_ego_states_prior_logprob(
         self,
         state: Float[Array, "n_non_ego n_states"],
@@ -386,8 +379,7 @@ class IntersectionEnv:
         )
         return initial_state_logprobs.sum()
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_non_ego_actions(
         self,
         key: PRNGKeyArray,
@@ -410,8 +402,7 @@ class IntersectionEnv:
         )
         return action
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def non_ego_actions_prior_logprob(
         self,
         action: Float[Array, "n_non_ego n_actions"],
@@ -433,8 +424,7 @@ class IntersectionEnv:
         logprobs = jax.vmap(logprob_fn)(action)
         return logprobs.sum()
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_shading_light_direction(self, key: PRNGKeyArray) -> Float[Array, " 3"]:
         """Sample light direction.
 
@@ -451,8 +441,7 @@ class IntersectionEnv:
         )
         return direction
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def shading_light_direction_prior_logprob(
         self,
         direction: Float[Array, " 3"],
@@ -472,8 +461,7 @@ class IntersectionEnv:
         )
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def sample_non_ego_colors(self, key: PRNGKeyArray) -> Float[Array, "n_non_ego 3"]:
         """Sample RGB colors for each non-ego agent uniformly at random.
 
@@ -487,8 +475,7 @@ class IntersectionEnv:
         color = jax.random.uniform(key, shape=(n_non_ego, 3))
         return color
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def non_ego_colors_prior_logprob(
         self,
         color: Float[Array, "n_non_ego 3"],
@@ -514,8 +501,7 @@ class IntersectionEnv:
         logprob = log_smooth_uniform(color, 0.0, 1.0).sum()
         return logprob
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def overall_prior_logprob(self, state: HighwayState) -> Float[Array, ""]:
         """Compute the overall prior logprobability of the given initial state"""
         return (

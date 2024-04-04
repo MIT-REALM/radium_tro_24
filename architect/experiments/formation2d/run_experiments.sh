@@ -1,28 +1,23 @@
-wait
+# Run small experiments
+for seed in 0 1 2 3
+do
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 5 --num_chains 5 --grad_clip 100 --failure_level 10.0 --L 5 --ep_mcmc_step_size 1e-5 --dp_mcmc_step_size 1e-5 --max_wind_thrust 1.0 --seed $seed --disable_stochasticity --no-predict &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 5 --num_chains 5 --grad_clip 100 --failure_level 10.0 --L 5 --ep_mcmc_step_size 1e-5 --dp_mcmc_step_size 1e-5 --max_wind_thrust 1.0 --seed $seed --disable_stochasticity &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 5 --num_chains 5 --grad_clip 100 --failure_level 10.0 --L 5 --ep_mcmc_step_size 1e-5 --dp_mcmc_step_size 1e-5 --max_wind_thrust 1.0 --seed $seed --disable_gradients --quench_rounds 0 &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 5 --num_chains 5 --grad_clip 100 --failure_level 10.0 --L 5 --ep_mcmc_step_size 1e-5 --dp_mcmc_step_size 1e-5 --max_wind_thrust 1.0 --reinforce --seed $seed &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 5 --num_chains 5 --grad_clip 100 --failure_level 10.0 --L 5 --ep_mcmc_step_size 1e-5 --dp_mcmc_step_size 1e-5 --max_wind_thrust 1.0 --temper --seed $seed &
+done
 
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --disable_stochasticity --no-predict &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --disable_stochasticity &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --disable_gradients --quench_rounds 0 &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 &
+wait;
 
-wait
+# Run large experiments
+for seed in 0 1 2 3
+do
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --L 5 --num_chains 5 --ep_mcmc_step_size 1e-4 --dp_mcmc_step_size 1e-4 --failure_level 10.0 --grad_clip 100 --max_wind_thrust 1.0 --seed $seed --disable_stochasticity --no-predict &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --L 5 --num_chains 5 --ep_mcmc_step_size 1e-4 --dp_mcmc_step_size 1e-4 --failure_level 10.0 --grad_clip 100 --max_wind_thrust 1.0 --seed $seed --disable_stochasticity &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --L 5 --num_chains 5 --ep_mcmc_step_size 1e-4 --dp_mcmc_step_size 1e-4 --failure_level 10.0 --grad_clip 100 --max_wind_thrust 1.0 --seed $seed --disable_gradients --quench_rounds 0 &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --L 5 --num_chains 5 --ep_mcmc_step_size 1e-4 --dp_mcmc_step_size 1e-4 --failure_level 10.0 --grad_clip 100 --max_wind_thrust 1.0 --reinforce --seed $seed &
+    CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/solve.py --n 10 --L 5 --num_chains 5 --ep_mcmc_step_size 1e-4 --dp_mcmc_step_size 1e-4 --failure_level 10.0 --grad_clip 100 --max_wind_thrust 1.0 --temper --seed $seed &
 
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/stress_test.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/5_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/predict/mala &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/stress_test.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/5_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/predict/gd &
-wait
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/stress_test.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/5_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/no_predict/gd &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/stress_test.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/0_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/predict/rmh &
-
-wait
-
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/training_curves.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/5_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/predict/mala &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/training_curves.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/5_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/predict/gd &
-wait
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/training_curves.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/5_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/no_predict/gd &
-CUDA_VISIBLE_DEVICES=, python architect/experiments/formation2d/training_curves.py --file_prefix results/formation2d_grad_norm_netconn/10/L_1.0e+00/3_T/250_samples/0_quench/no_temper5_chains/dp_1.0e-03/ep_1.0e-03/repair/predict/rmh &
-
-wait
-
-python architect/experiments/formation2d/plot_training_curves.py
-
-python architect/experiments/formation2d/plot_stress_test_results.py 
+    # wait;
+done

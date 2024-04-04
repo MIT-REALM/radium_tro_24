@@ -1,8 +1,8 @@
 """Manage the state of the drone and landing environment."""
+
 import jax
 import jax.nn
 import jax.numpy as jnp
-import jax.random as jrandom
 from beartype import beartype
 from beartype.typing import NamedTuple, Tuple
 from jax.nn import log_sigmoid
@@ -85,8 +85,7 @@ class DroneLandingEnv:
     _moving_obstacles: bool
     _substeps: int
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def __init__(
         self,
         scene: DroneLandingScene,
@@ -112,8 +111,7 @@ class DroneLandingEnv:
         self._moving_obstacles = moving_obstacles
         self._substeps = substeps
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def drone_dynamics(
         self,
         state: Float[Array, " n_states"],
@@ -149,8 +147,7 @@ class DroneLandingEnv:
 
         return jnp.array([x_next, y_next, z_next, yaw_next])
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def step(
         self,
         state: DroneState,
@@ -229,8 +226,7 @@ class DroneLandingEnv:
 
         return next_state, obs, reward, done
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def reset(self, key: PRNGKeyArray) -> DroneState:
         """Reset the environment.
 
@@ -278,8 +274,7 @@ class DroneLandingEnv:
             wind_speed=wind_speed,
         )
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def initial_state_logprior(self, state: DroneState) -> Float[Array, ""]:
         """
         Compute the prior logprobability of the given state.
@@ -339,8 +334,7 @@ class DroneLandingEnv:
 
         return drone_logprior + tree_logprior + wind_logprior + tree_vel_logprior
 
-    @jaxtyped
-    @beartype
+    @jaxtyped(typechecker=beartype)
     def get_obs(self, state: DroneState) -> DroneObs:
         """Get the observation from the given state.
 

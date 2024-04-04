@@ -7,11 +7,15 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
+import matplotlib
 import matplotlib.pyplot as plt
 from jax.config import config
 from jaxtyping import Array, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
+from architect.engines.reinforce import init_sampler as init_reinforce_sampler
+from architect.engines.reinforce import make_kernel as make_reinforce_kernel
 from architect.engines.samplers import init_sampler as init_mcmc_sampler
 from architect.engines.samplers import make_kernel as make_mcmc_kernel
 from architect.systems.hide_and_seek.hide_and_seek import Game
@@ -20,25 +24,108 @@ from architect.systems.hide_and_seek.hide_and_seek_types import Arena
 config.update("jax_debug_nans", True)
 
 
+def plotting_cb(dp, eps):
+    result = jax.vmap(game, in_axes=(None, 0, 0))(dp, eps[0], eps[1])
+
+    # Plot the results
+    fig, axs = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Plot the arena
+    axs[0].plot(
+        [-width / 2, -width / 2, width / 2, width / 2, -width / 2],
+        [-height / 2, height / 2, height / 2, -height / 2, -height / 2],
+        "k-",
+    )
+
+    # Plot initial setup
+    axs[0].scatter(
+        game.initial_seeker_positions[:, 0],
+        game.initial_seeker_positions[:, 1],
+        color="b",
+        marker="x",
+        s=25,
+        label="Initial seeker positions",
+    )
+    axs[0].scatter(
+        game.initial_hider_positions[:, 0],
+        game.initial_hider_positions[:, 1],
+        color="r",
+        marker="x",
+        s=25,
+        label="Initial hider positions",
+    )
+
+    axs[0].legend()
+    axs[0].set_aspect("equal")
+
+    # Plot planned seeker trajectories
+    t = jnp.linspace(0, 1, 100)
+    for traj in dp.trajectories:
+        pts = jax.vmap(traj)(t)
+        axs[0].plot(pts[:, 0], pts[:, 1], "b:")
+        axs[0].scatter(traj.p[:, 0], traj.p[:, 1], s=10, color="b", marker="o")
+
+    # Plot realized seeker trajectories
+    for i in range(game.initial_seeker_positions.shape[0]):
+        axs[0].plot(
+            result.seeker_positions[0, :, i, 0],
+            result.seeker_positions[0, :, i, 1],
+            "b-",
+        )
+
+    # Plot realized hider trajectories
+    for i in range(game.initial_hider_positions.shape[0]):
+        max_U = result.potential.max()
+        min_U = result.potential.min()
+        for j in range(num_chains):
+            # Make more successful evasions more apparent
+            potential = result.potential[j]
+            alpha = 0.1 + 0.9 * ((potential - min_U) / (1e-3 + max_U - min_U)).item()
+            axs[0].plot(
+                result.hider_positions[j, :, i, 0],
+                result.hider_positions[j, :, i, 1],
+                "r-",
+                linewidth=1,
+                alpha=alpha,
+            )
+
+    # Plot potential vs number of escapes
+    axs[1].scatter(result.escaped, result.potential)
+    axs[1].set_xlabel("Number of hiders escaped")
+    axs[1].set_ylabel("Potential")
+
+    # log the figure to wandb
+    wandb.log({"plot": wandb.Image(fig)}, commit=False)
+
+    # Close the figure
+    plt.close()
+
+
 if __name__ == "__main__":
+    matplotlib.use("Agg")
+
     # Set up arguments
     parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, nargs="?", default=0)
     parser.add_argument("--n_seekers", type=int, nargs="?", default=4 * 3)
     parser.add_argument("--n_hiders", type=int, nargs="?", default=4 * 5)
-    parser.add_argument("--L", type=float, nargs="?", default=10.0)
+    parser.add_argument("--failure_level", type=float, nargs="?", default=-0.1)
+    parser.add_argument("--L", type=float, nargs="?", default=100.0)
     parser.add_argument("--T", type=int, nargs="?", default=5)
     parser.add_argument("--width", type=float, nargs="?", default=4 * 3.2)
     parser.add_argument("--height", type=float, nargs="?", default=2 * 2.0)
     parser.add_argument("--buffer", type=float, nargs="?", default=0.2)
-    parser.add_argument("--duration", type=float, nargs="?", default=50.0)
-    parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-2)
-    parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-2)
-    parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
-    parser.add_argument("--num_mcmc_steps_per_round", type=int, nargs="?", default=10)
+    parser.add_argument("--duration", type=float, nargs="?", default=10.0)
+    parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-3)
+    parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-3)
+    parser.add_argument("--num_rounds", type=int, nargs="?", default=50)
+    parser.add_argument("--num_mcmc_steps_per_round", type=int, nargs="?", default=50)
     parser.add_argument("--num_chains", type=int, nargs="?", default=10)
-    parser.add_argument("--quench_rounds", type=int, nargs="?", default=25)
+    parser.add_argument("--quench_rounds", type=int, nargs="?", default=20)
     parser.add_argument("--disable_gradients", action="store_true")
     parser.add_argument("--disable_stochasticity", action="store_true")
+    parser.add_argument("--reinforce", action="store_true")
+    parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=1000)
     boolean_action = argparse.BooleanOptionalAction
     parser.add_argument("--repair", action=boolean_action, default=True)
     parser.add_argument("--predict", action=boolean_action, default=True)
@@ -50,6 +137,7 @@ if __name__ == "__main__":
     n_seekers = args.n_seekers
     n_hiders = args.n_hiders
     T = args.T
+    failure_level = args.failure_level
     L = args.L
     width = args.width
     height = args.height
@@ -62,6 +150,7 @@ if __name__ == "__main__":
     num_chains = args.num_chains
     use_gradients = not args.disable_gradients
     use_stochasticity = not args.disable_stochasticity
+    reinforce = args.reinforce
     repair = args.repair
     predict = args.predict
     temper = args.temper
@@ -72,6 +161,7 @@ if __name__ == "__main__":
     print(f"\tn_seekers = {n_seekers}")
     print(f"\tn_hiders = {n_hiders}")
     print(f"\tT = {T}")
+    print(f"\tfailure_level = {failure_level}")
     print(f"\tL = {L}")
     print(f"\twidth = {width}")
     print(f"\theight = {height}")
@@ -84,18 +174,58 @@ if __name__ == "__main__":
     print(f"\tnum_chains = {num_chains}")
     print(f"\tuse_gradients = {use_gradients}")
     print(f"\tuse_stochasticity = {use_stochasticity}")
+    print(f"\treinforce = {reinforce}")
     print(f"\trepair = {repair}")
     print(f"\tpredict = {predict}")
     print(f"\ttemper = {temper}")
     print(f"\tquench_rounds = {quench_rounds}")
     print(f"\tgrad_clip = {grad_clip}")
 
+    if reinforce:
+        alg_type = "reinforce"
+    elif use_gradients and use_stochasticity:
+        alg_type = "mala"
+    elif use_gradients and not use_stochasticity:
+        alg_type = "gd"
+    elif not use_gradients and use_stochasticity:
+        alg_type = "rmh"
+    else:
+        alg_type = "static"
+
+    # Initialize logger
+    wandb.init(
+        project=f"tro2-hideseek2-{n_hiders}-hiders-{n_seekers}-seekers-clipped",
+        group=alg_type
+        + ("-predict" if predict else "")
+        + ("-repair" if repair else ""),
+        config={
+            "L": L,
+            "failure_level": failure_level,
+            "n_hiders": n_hiders,
+            "n_seekers": n_seekers,
+            "seed": args.seed,
+            "dp_mcmc_step_size": dp_mcmc_step_size,
+            "ep_mcmc_step_size": ep_mcmc_step_size,
+            "num_rounds": num_rounds,
+            "num_steps_per_round": num_mcmc_steps_per_round,
+            "num_chains": num_chains,
+            "use_gradients": use_gradients,
+            "use_stochasticity": use_stochasticity,
+            "reinforce": reinforce,
+            "repair": repair,
+            "predict": predict,
+            "temper": temper,
+            "quench_rounds": quench_rounds,
+            "grad_clip": grad_clip,
+        },
+    )
+
     # Add exponential tempering if using
     t = jnp.linspace(0, 1, num_rounds)
     tempering_schedule = 1 - jnp.exp(-5 * t) if temper else None
 
     # Create the game
-    arena = Arena(width, height, buffer)
+    arena = Arena(width, height, 0.0)
     initial_seeker_positions = jnp.stack(
         (
             jnp.zeros(n_seekers) - width / 2.0 + buffer,
@@ -114,13 +244,15 @@ if __name__ == "__main__":
         duration=duration,
         dt=0.1,
         sensing_range=0.5,
-        seeker_max_speed=0.2,
-        hider_max_speed=0.2,
+        seeker_max_speed=(width + height) / duration,
+        hider_max_speed=(width + height) / duration,
         b=100.0,
+        width=width,
+        height=height,
     )
 
     # Make a PRNG key (#sorandom)
-    prng_key = jrandom.PRNGKey(0)
+    prng_key = jrandom.PRNGKey(args.seed)
 
     # Initialize the seeker trajectories randomly
     prng_key, seeker_key = jrandom.split(prng_key)
@@ -149,6 +281,26 @@ if __name__ == "__main__":
         )
     )(disturbance_keys)
 
+    # Initialize stress test cases randomly
+    prng_key, hider_key = jrandom.split(prng_key)
+    hider_keys = jrandom.split(hider_key, args.num_stress_test_cases)
+    stress_test_hider_trajectories = jax.vmap(
+        lambda key: arena.sample_random_multi_trajectory(
+            key, initial_hider_positions, T=T
+        )
+    )(hider_keys)
+    prng_key, disturbance_key = jrandom.split(prng_key)
+    disturbance_keys = jrandom.split(disturbance_key, args.num_stress_test_cases)
+    stress_test_disturbance_trajectory = jax.vmap(
+        lambda key: arena.sample_random_multi_trajectory(
+            key, jnp.zeros_like(initial_seeker_positions), T=T
+        )
+    )(disturbance_keys)
+    stress_test_eps = (
+        stress_test_hider_trajectories,
+        stress_test_disturbance_trajectory,
+    )
+
     # Define a joint logprob for the hider trajectories and disturbances
     def joint_ep_prior_logprob(ep):
         hider_trajs = ep[0]
@@ -157,22 +309,34 @@ if __name__ == "__main__":
             hider_trajs
         ) + arena.multi_trajectory_prior_logprob(disturbance_traj)
 
-    # This sampler yields either MALA, GD, or RMH depending on whether gradients and/or
-    # stochasticity are enabled
-    init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
-        params,
-        logprob_fn,
-        False,  # don't normalize gradients
-    )
-    make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-        logprob_fn,
-        step_size,
-        use_gradients,
-        stochasticity,
-        grad_clip,
-        False,  # don't normalize gradients
-        True,  # use metroplis-hastings
-    )
+    if reinforce:
+        init_sampler_fn = init_reinforce_sampler
+        make_kernel_fn = lambda _1, logprob_fn, step_size, _2: make_reinforce_kernel(
+            logprob_fn,
+            step_size,
+            perturbation_stddev=0.1,
+            baseline_update_rate=0.5,
+        )
+    else:
+        # This sampler yields either MALA, GD, or RMH depending on whether gradients and/or
+        # stochasticity are enabled
+        init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
+            params,
+            logprob_fn,
+            True,  # normalize gradients
+            grad_clip,
+        )
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                True,  # normalize gradients
+                True,  # use metroplis-hastings
+            )
+        )
 
     # Run the prediction+mitigation process
     t_start = time.perf_counter()
@@ -182,8 +346,14 @@ if __name__ == "__main__":
         (init_hider_trajectories, init_disturbance_trajectory),
         dp_logprior_fn=arena.multi_trajectory_prior_logprob,
         ep_logprior_fn=joint_ep_prior_logprob,
-        ep_potential_fn=lambda dp, ep: L * game(dp, ep[0], ep[1]).potential,
-        dp_potential_fn=lambda dp, ep: -L * game(dp, ep[0], ep[1]).potential,
+        ep_potential_fn=lambda dp, ep: -L
+        * jax.nn.elu(failure_level - game(dp, ep[0], ep[1]).potential),
+        dp_potential_fn=lambda dp, ep: -L
+        * jax.nn.elu(game(dp, ep[0], ep[1]).potential - failure_level),
+        # ep_potential_fn=lambda dp, ep: -L
+        # * (failure_level - game(dp, ep[0], ep[1]).potential),
+        # dp_potential_fn=lambda dp, ep: -L
+        # * (game(dp, ep[0], ep[1]).potential - failure_level),
         init_sampler=init_sampler_fn,
         make_kernel=make_kernel_fn,
         num_rounds=num_rounds,
@@ -194,8 +364,12 @@ if __name__ == "__main__":
         repair=repair,
         predict=predict,
         quench_rounds=quench_rounds,
-        quench_dps=False,  # quench both dps and eps
+        quench_dps_only=False,  # quench both dps and eps
         tempering_schedule=tempering_schedule,
+        stress_test_cases=stress_test_eps,
+        potential_fn=lambda dp, ep: game(dp, ep[0], ep[1]).potential,
+        failure_level=failure_level,
+        plotting_cb=plotting_cb,
     )
     t_end = time.perf_counter()
     print(

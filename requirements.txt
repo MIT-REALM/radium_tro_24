@@ -15,6 +15,7 @@ tqdm>=4.62.3
 scipy>=1.10.0
 tensorboard>=2.8.0
 torch>=2.0.0
+wandb>=0.15.5
 
 # JAX
 jax>=0.4.5
@@ -31,5 +32,8 @@ equinox==0.10.1
 # DE solver (includes Newton-Raphson solver)
 diffrax>=0.3.1
 
-# Optimal transport (for data analysis)
-pyemd
+# Sampling
+blackjax>=0.9.6
+
+# Systems
+jax-f16

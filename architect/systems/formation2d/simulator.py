@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 from beartype import beartype
 from beartype.typing import NamedTuple
+from jax.nn import softplus
 from jaxtyping import Array, Float, jaxtyped
 
 from architect.systems.hide_and_seek.hide_and_seek_types import (
@@ -12,7 +13,7 @@ from architect.systems.hide_and_seek.hide_and_seek_types import (
     Trajectory2D,
 )
 from architect.types import PRNGKeyArray
-from architect.utils import softmax
+from architect.utils import softmax, softmin
 
 
 class FormationResult(NamedTuple):
@@ -23,11 +24,13 @@ class FormationResult(NamedTuple):
         positions: the positions of the drones over time
         potential: the potential/cost assigned to this rollout
         connectivity: the connectivity of the formation over time
+        min_interagent_distance: the minimum distance between any two agents over time
     """
 
     positions: Float[Array, "T n 2"]
     potential: Float[Array, " "]
     connectivity: Float[Array, "T"]
+    min_interagent_distance: Float[Array, "T"]
 
 
 class WindField(eqx.Module):
@@ -51,6 +54,60 @@ class WindField(eqx.Module):
             x = jax.nn.tanh(layer(x))
 
         return max_thrust * x
+
+
+class KernelWindField(eqx.Module):
+    """
+    Represents a wind flow field in 2D as a kernel function.
+    """
+
+    wind_kernels: list
+    kernel_locs: list
+
+    def __init__(self, key, n_kernels: int = 1):
+        key1, key2 = jax.random.split(key, 2)
+        self.wind_kernels = jax.random.normal(key1, shape=(n_kernels, 2))
+        self.kernel_locs = jax.random.normal(key2, shape=(n_kernels, 2))
+
+    def kernel_fn(self, x, loc, wind):
+        # Make the kernel stronger on the positive side of the wind
+        wind_direction = wind / (jnp.linalg.norm(wind) + 1e-3)
+        distance_along_wind = jnp.dot(x - loc, wind_direction)
+        distance_perpendicular_to_wind = jnp.linalg.norm(
+            x - loc - distance_along_wind * wind_direction
+        )
+        # Apply a Gaussian kernel
+        return jax.lax.cond(
+            distance_along_wind >= 0,
+            lambda: jnp.exp(
+                -20 * distance_perpendicular_to_wind**2
+                - distance_along_wind**2 / jnp.linalg.norm(wind)
+            ),
+            lambda: jnp.exp(
+                -20 * distance_perpendicular_to_wind**2
+                - 20 * distance_along_wind**2 / jnp.linalg.norm(wind)
+            ),
+        )
+
+    def __call__(self, x, max_thrust: float = 1.0):
+        weights = jax.vmap(self.kernel_fn, in_axes=(None, 0, 0))(
+            x, self.kernel_locs, self.wind_kernels
+        )
+        return max_thrust * jnp.sum(weights[:, None] * self.wind_kernels, axis=0)
+
+
+class ConstantWindField(eqx.Module):
+    """
+    Represents a wind flow field in 2D as a constant vector field.
+    """
+
+    vector: Float[Array, " 2"]
+
+    def __init__(self, key):
+        self.vector = jax.random.normal(key, shape=(2,))
+
+    def __call__(self, x, max_thrust: float = 1.0):
+        return max_thrust * jax.nn.tanh(self.vector)
 
 
 def double_integrator_dynamics(
@@ -82,7 +139,7 @@ def pd_controller(q: Float[Array, " 4"], target_position: Float[Array, " 2"]):
 def closed_loop_dynamics(
     q: Float[Array, " 4"],
     target_position: Float[Array, " 2"],
-    wind: WindField,
+    wind: eqx.Module,
     max_wind_thrust: float,
     mass: float,
 ) -> Float[Array, " 4"]:
@@ -123,6 +180,24 @@ def algebraic_connectivity(
     return connectivity
 
 
+def min_interagent_distance(
+    positions: Float[Array, "n 2"], sharpness: float = 20.0
+) -> Float[Array, ""]:
+    """Compute the minimum distance between any two agents"""
+    # Get the pairwise distance between drones
+    distance_matrix = jnp.sqrt(
+        jnp.sum(((positions[:, None, :] - positions[None, :, :]) ** 2), axis=-1) + 1e-3
+    )
+
+    # Set the diagonal to something large so we don't have to worry
+    distance_matrix += jnp.eye(distance_matrix.shape[0]) * 100.0
+
+    # Compute the minimum distance
+    min_distance = softmin(distance_matrix, sharpness)
+
+    return min_distance
+
+
 def sample_random_connection_strengths(
     key: PRNGKeyArray, n: int
 ) -> Float[Array, "n n"]:
@@ -150,8 +225,7 @@ def sample_random_connection_strengths(
     return connection_strengths
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def connection_strength_prior_logprob(
     connection_strengths: Float[Array, "n n"]
 ) -> Float[Array, ""]:
@@ -178,12 +252,11 @@ def connection_strength_prior_logprob(
     return logprob
 
 
-@jaxtyped
-@beartype
+@jaxtyped(typechecker=beartype)
 def simulate(
     target_trajectories: MultiAgentTrajectory,
     initial_states: Float[Array, "n 4"],
-    wind: WindField,
+    wind: eqx.Module,
     connection_strengths: Float[Array, "n n"],
     goal_com_position: Float[Array, " 2"],
     duration: float = 10.0,
@@ -253,45 +326,93 @@ def simulate(
     )
     inverse_connectivity = 1 / (connectivity + 1e-2)
     potential = softmax(inverse_connectivity, b)
+
     # Add a term that encourages getting the formation COM to the desired position
     formation_final_com = jnp.mean(qs[-1, :, :2], axis=0)
     potential += 10 * jnp.sqrt(
-        jnp.sum((formation_final_com - goal_com_position) ** 2) + 1e-2
+        jnp.mean((formation_final_com - goal_com_position) ** 2) + 1e-2
     )
 
+    # Add a term that avoids collisions
+    min_distance_trace = jax.vmap(min_interagent_distance)(qs[:, :, :2])
+    min_distance = softmin(min_distance_trace, b)
+    min_distance = softplus(b * min_distance) / b
+    potential += 0.1 / min_distance
+
     # Return the result
-    return FormationResult(positions=qs, potential=potential, connectivity=connectivity)
+    return FormationResult(
+        positions=qs,
+        potential=potential,
+        connectivity=connectivity,
+        min_interagent_distance=min_distance_trace,
+    )
 
 
 if __name__ == "__main__":
     # Test the simulation
-    key = jax.random.PRNGKey(0)
-    wind = WindField(key)
+    key = jax.random.PRNGKey(1)
+    wind = KernelWindField(key)
     target_positions = MultiAgentTrajectory(
         [
-            Trajectory2D(jnp.array([[1.0, 1.0]])),
-            Trajectory2D(jnp.array([[1.0, 0.0]])),
-            Trajectory2D(jnp.array([[0.0, 1.0]])),
+            Trajectory2D(jnp.array([[1.5, 0.3]])),
+            Trajectory2D(jnp.array([[1.5, 0.0]])),
+            Trajectory2D(jnp.array([[1.5, -0.3]])),
         ]
     )
     initial_states = jnp.array(
         [
-            [0.0, 0.0, 1.0, 0.0],
-            [-0.1, 0.0, 0.0, -1.0],
-            [0.0, -0.1, -1.0, 0.0],
+            [-1.5, -0.3, 0.0, 0.0],
+            [-1.5, 0.0, 0.0, 0.0],
+            [-1.5, 0.3, 0.0, 0.0],
         ]
     )
-    goal_com_position = jnp.array([2.0 / 3.0, 2.0 / 3.0])
+    goal_com_position = jnp.array([1.5, 0.0])
     result = simulate(
-        target_positions, initial_states, wind, goal_com_position, max_wind_thrust=1.0
+        target_positions,
+        initial_states,
+        wind,
+        connection_strengths=jnp.ones((3, 3)),
+        max_wind_thrust=50.0,
+        goal_com_position=goal_com_position,
     )
     print(result.potential)
+
+    # # Test that there is a gradient path from the target positions to the potential
+    # def potential_fn(x):
+    #     target_positions = MultiAgentTrajectory(
+    #         [
+    #             Trajectory2D(jnp.array([[1.5, 0.3]])),
+    #             Trajectory2D(jnp.array([[1.5, 0.0]])),
+    #             Trajectory2D(jnp.array([[1.5 + x, -0.3 + x]])),
+    #         ]
+    #     )
+    #     initial_states = jnp.array(
+    #         [
+    #             [-1.5, -0.3, 0.0, 0.0],
+    #             [-1.5, 0.0, 0.0, 0.0],
+    #             [-1.5, 0.3, 0.0, 0.0],
+    #         ]
+    #     )
+    #     goal_com_position = jnp.array([1.5, 0.0])
+    #     result = simulate(
+    #         target_positions,
+    #         initial_states,
+    #         wind,
+    #         connection_strengths=jnp.ones((3, 3)),
+    #         max_wind_thrust=1.0,
+    #         goal_com_position=goal_com_position,
+    #     )
+    #     return result.potential
+
+    # grad_fn = jax.grad(potential_fn)
+    # grad = grad_fn(0.0)
+    # print(grad)
 
     # plot the results, with a 2D plot of the positions and a time trace of the
     # connectivity on different subplots
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 1, figsize=(6, 6))
+    fig, axes = plt.subplots(3, 1, figsize=(6, 9))
 
     # Plot the trajectories
     axes[0].plot(result.positions[:, :, 0], result.positions[:, :, 1])
@@ -299,7 +420,7 @@ if __name__ == "__main__":
     axes[0].set_ylabel("y")
     axes[0].set_title("Positions")
     # Overlay the wind field
-    X, Y = jnp.meshgrid(jnp.linspace(-0.2, 1, 50), jnp.linspace(-0.2, 1, 50))
+    X, Y = jnp.meshgrid(jnp.linspace(-2, 2, 50), jnp.linspace(-1, 1, 50))
     wind_speeds = jax.vmap(jax.vmap(wind))(jnp.stack([X, Y], axis=-1))
     axes[0].quiver(
         X,
@@ -312,11 +433,30 @@ if __name__ == "__main__":
         scale_units="xy",
         scale=10.0,
     )
+    axes[0].scatter(
+        wind.kernel_locs[:, 0], wind.kernel_locs[:, 1], color="r", marker="x"
+    )
+    axes[0].scatter(
+        wind.kernel_locs[:, 0] + wind.wind_kernels[:, 0],
+        wind.kernel_locs[:, 1] + wind.wind_kernels[:, 1],
+        color="r",
+        marker="o",
+    )
 
     # Plot the connectivity
     axes[1].plot(result.connectivity)
     axes[1].set_xlabel("Time")
     axes[1].set_ylabel("Connectivity")
     axes[1].set_title("Connectivity")
+
+    # Plot the minimum interagent distance
+    min_distance = softplus(20.0 * result.min_interagent_distance) / 20.0
+    min_distance_potential = 1 / min_distance
+    axes[2].plot(result.min_interagent_distance, label="Minimum Interagent Distance")
+    axes[2].plot(min_distance_potential, label="Potential")
+    axes[2].set_xlabel("Time")
+    axes[2].set_ylabel("Minimum Interagent Distance")
+    axes[2].legend()
+
     plt.tight_layout()
     plt.show()

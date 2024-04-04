@@ -1,4 +1,5 @@
 """Code to predict and mitigate failure modes in the grasping scenario."""
+
 import argparse
 import json
 import os
@@ -14,6 +15,7 @@ import matplotlib.pyplot as plt
 from beartype.typing import NamedTuple
 from jaxtyping import Array, Float, Shaped
 
+import wandb
 from architect.engines import predict_and_mitigate_failure_modes
 from architect.engines.reinforce import init_sampler as init_reinforce_sampler
 from architect.engines.reinforce import make_kernel as make_reinforce_kernel
@@ -27,7 +29,6 @@ from architect.systems.simple_grasping.env import (
 )
 from architect.systems.simple_grasping.policy import AffordancePredictor
 from architect.types import PRNGKeyArray
-from architect.utils import softmin
 
 
 class SimulationResults(NamedTuple):
@@ -134,13 +135,13 @@ def simulate(
     max_affordance_pred_x = jnp.sum(X * max_affordance_pred)
     max_affordance_pred_y = jnp.sum(Y * max_affordance_pred)
 
-    # Compute the grasp potential as the distance between the predicted and
-    # ground truth grasp affordances
-    potential = jnp.sqrt(
-        (max_affordance_gt_x - max_affordance_pred_x) ** 2
-        + (max_affordance_gt_y - max_affordance_pred_y) ** 2
-        + 1e-3
-    )
+    # # Compute the grasp potential as the distance between the predicted and
+    # # ground truth grasp affordances
+    # potential = jnp.sqrt(
+    #     (max_affordance_gt_x - max_affordance_pred_x) ** 2
+    #     + (max_affordance_gt_y - max_affordance_pred_y) ** 2
+    #     + 1e-3
+    # )
 
     # Get the grasp forces at that point
     clamp_strength = 1.0
@@ -166,6 +167,9 @@ def simulate(
     #     grasp2_tangential_force**2
     # )
 
+    # Potential is the distance between the predicted and ground truth affordances
+    potential = jnp.mean((gt_affordance - predicted_affordance) ** 2)
+
     return SimulationResults(
         potential=potential,
         grasp_pt=jnp.vstack([grasp1, grasp2]),
@@ -185,224 +189,18 @@ def simulate(
     )
 
 
-if __name__ == "__main__":
-    # Set up arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--savename", type=str, default="grasping")
-    parser.add_argument("--object_type", type=str, default="box")
-    parser.add_argument("--seed", type=int, nargs="?", default=0)
-    parser.add_argument("--L", type=float, nargs="?", default=1.0)
-    parser.add_argument("--failure_level", type=float, nargs="?", default=0.2)
-    parser.add_argument("--dp_logprior_scale", type=float, nargs="?", default=1.0)
-    parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-5)
-    parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-5)
-    parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
-    parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=10)
-    parser.add_argument("--num_chains", type=int, nargs="?", default=10)
-    parser.add_argument("--quench_rounds", type=int, nargs="?", default=0)
-    parser.add_argument("--disable_gradients", action="store_true")
-    parser.add_argument("--disable_stochasticity", action="store_true")
-    parser.add_argument("--disable_mh", action="store_true")
-    parser.add_argument("--reinforce", action="store_true")
-    parser.add_argument("--moving_obstacles", action="store_true")
-    boolean_action = argparse.BooleanOptionalAction
-    parser.add_argument("--repair", action=boolean_action, default=False)
-    parser.add_argument("--predict", action=boolean_action, default=True)
-    parser.add_argument("--temper", action=boolean_action, default=True)
-    parser.add_argument("--grad_clip", type=float, nargs="?", default=float("inf"))
-    parser.add_argument("--dont_normalize_gradients", action="store_true")
-    args = parser.parse_args()
+def plotting_cb(dp, eps):
+    """Plot the results of the simulation with the given DP and all given EPs.
 
-    # Hyperparameters
-    L = args.L
-    seed = args.seed
-    object_type = args.object_type
-    failure_level = args.failure_level
-    dp_logprior_scale = args.dp_logprior_scale
-    dp_mcmc_step_size = args.dp_mcmc_step_size
-    ep_mcmc_step_size = args.ep_mcmc_step_size
-    num_rounds = args.num_rounds
-    num_steps_per_round = args.num_steps_per_round
-    num_chains = args.num_chains
-    use_gradients = not args.disable_gradients
-    use_stochasticity = not args.disable_stochasticity
-    use_mh = not args.disable_mh
-    reinforce = args.reinforce
-    repair = args.repair
-    predict = args.predict
-    temper = args.temper
-    quench_rounds = args.quench_rounds
-    grad_clip = args.grad_clip
-    normalize_gradients = not args.dont_normalize_gradients
-
-    print("Running prediction/mitigation on grasping with hyperparameters:")
-    print(f"\tmodel_path = {args.model_path}")
-    print(f"\tobject = {object_type}")
-    print(f"\tseed = {seed}")
-    print(f"\timage dimensions (w x h) = 64 x 64")
-    print(f"\tL = {L}")
-    print(f"\tfailure_level = {failure_level}")
-    print(f"\tdp_logprior_scale = {dp_logprior_scale}")
-    print(f"\tdp_mcmc_step_size = {dp_mcmc_step_size}")
-    print(f"\tep_mcmc_step_size = {ep_mcmc_step_size}")
-    print(f"\tnum_rounds = {num_rounds}")
-    print(f"\tnum_steps_per_round = {num_steps_per_round}")
-    print(f"\tnum_chains = {num_chains}")
-    print(f"\tuse_gradients = {use_gradients}")
-    print(f"\tuse_stochasticity = {use_stochasticity}")
-    print(f"\tuse_mh = {use_mh}")
-    print(f"\trepair = {repair}")
-    print(f"\tpredict = {predict}")
-    print(f"\ttemper = {temper}")
-    print(f"\tquench_rounds = {quench_rounds}")
-    print(f"\tgrad_clip = {grad_clip}")
-    print(f"\tnormalize_gradients = {normalize_gradients}")
-    print(
-        f"\tUsing alternative algorithm? {reinforce}",
-        f"(reinforce = {reinforce})",
-    )
-
-    # Add exponential tempering if using
-    t = jnp.linspace(0, 1, num_rounds) + 0.1
-    tempering_schedule = 1 - jnp.exp(-40 * t) if temper else None
-
-    # Make a PRNG key (#sorandom)
-    prng_key = jrandom.PRNGKey(seed)
-
-    # Load the model (key doesn't matter; we'll replace all leaves with the saved
-    # parameters), duplicating the model for each chain. We'll also split partition
-    # out just the continuous parameters, which will be our design parameters
-    dummy_policy = AffordancePredictor(jrandom.PRNGKey(0))
-    load_policy = lambda _: eqx.tree_deserialise_leaves(args.model_path, dummy_policy)
-    get_dps = lambda _: eqx.partition(load_policy(_), eqx.is_array)[0]
-    initial_dps = eqx.filter_vmap(get_dps)(jnp.arange(num_chains))
-    # Also save out the static part of the policy
-    initial_dp, static_policy = eqx.partition(load_policy(None), eqx.is_array)
-
-    # Make a prior logprob for the policy that penalizes large updates to the policy
-    # parameters
-    def dp_prior_logprob(dp):
-        # Take a mean rather than a sum to make this not crazy large
-        block_logprobs = jtu.tree_map(
-            lambda x_updated, x: jax.scipy.stats.norm.logpdf(
-                x_updated - x, scale=dp_logprior_scale
-            ).mean(),
-            dp,
-            initial_dp,
-        )
-        # Take a block mean rather than the sum of all blocks to avoid a crazy large
-        # logprob
-        overall_logprob = jax.flatten_util.ravel_pytree(block_logprobs)[0].mean()
-        return overall_logprob
-
-    # Initialize some initial states (these serve as our initial exogenous parameters)
-    prng_key, ep_keys = jrandom.split(prng_key)
-    ep_keys = jrandom.split(ep_keys, num_chains)
-    initial_eps = jax.vmap(sample_ep)(ep_keys)
-
-    # Choose which sampler to use
-    if reinforce:
-        init_sampler_fn = init_reinforce_sampler
-        make_kernel_fn = lambda logprob_fn, step_size, _: make_reinforce_kernel(
-            logprob_fn,
-            step_size,
-            perturbation_stddev=0.05,
-            baseline_update_rate=0.5,
-        )
-    else:
-        # This sampler yields either MALA, GD, or RMH depending on whether gradients
-        # and/or stochasticity are enabled
-        init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
-            params,
-            logprob_fn,
-            normalize_gradients,
-        )
-        make_kernel_fn = lambda logprob_fn, step_size, stochasticity: make_mcmc_kernel(
-            logprob_fn,
-            step_size,
-            use_gradients,
-            stochasticity,
-            grad_clip,
-            normalize_gradients,
-            use_mh,
-        )
-
-    if reinforce:
-        alg_type = "reinforce_l2c_0.05_step"
-    elif use_gradients and use_stochasticity and use_mh:
-        alg_type = "mala"
-    elif use_gradients and use_stochasticity and not use_mh:
-        alg_type = "ula"
-    elif use_gradients and not use_stochasticity:
-        alg_type = "gd"
-    elif not use_gradients and use_stochasticity and use_mh:
-        alg_type = "rmh"
-    elif not use_gradients and use_stochasticity and not use_mh:
-        alg_type = "random_walk"
-    else:
-        alg_type = "static"
-
-    # Run the prediction+mitigation process
-    t_start = time.perf_counter()
-    dps, eps, dp_logprobs, ep_logprobs = predict_and_mitigate_failure_modes(
-        prng_key,
-        initial_dps,
-        initial_eps,
-        dp_logprior_fn=dp_prior_logprob,
-        ep_logprior_fn=ep_logprior,
-        ep_potential_fn=lambda dp, ep: -L
-        * jax.nn.elu(
-            failure_level - simulate(object_type, ep, dp, static_policy).potential
-        ),
-        dp_potential_fn=lambda dp, ep: -L
-        * jax.nn.elu(
-            simulate(object_type, ep, dp, static_policy).potential - failure_level
-        ),
-        init_sampler=init_sampler_fn,
-        make_kernel=make_kernel_fn,
-        num_rounds=num_rounds,
-        num_mcmc_steps_per_round=num_steps_per_round,
-        dp_mcmc_step_size=dp_mcmc_step_size,
-        ep_mcmc_step_size=ep_mcmc_step_size,
-        use_stochasticity=use_stochasticity,
-        repair=repair,
-        predict=predict,
-        quench_rounds=quench_rounds,
-        tempering_schedule=tempering_schedule,
-        logging_prefix=f"{args.savename}/{alg_type}[{os.getpid()}]",
-    )
-    t_end = time.perf_counter()
-    print(
-        f"Ran {num_rounds:,} rounds with {num_chains} chains in {t_end - t_start:.2f} s"
-    )
-
-    # Select the policy that performs best against all predicted failures before
-    # the final round (choose from all chains)
-    if repair:
-        most_likely_dps_idx = jnp.argmax(dp_logprobs[-1], axis=-1)
-        final_dps = jtu.tree_map(lambda leaf: leaf[-1, most_likely_dps_idx], dps)
-    else:
-        # Just pick one policy arbitrarily if we didn't optimize the policies.
-        final_dps = jtu.tree_map(lambda leaf: leaf[-1, 0], dps)
-
-    # Evaluate this single policy against all failures
-    final_eps = jtu.tree_map(lambda leaf: leaf[-1], eps)
-
-    # # TODO for debugging plots, just use the initial policy and eps
-    # t_end = 0.0
-    # t_start = 0.0
-    # final_dps = jtu.tree_map(lambda leaf: leaf[-1], initial_dps)
-    # final_eps = initial_eps
-    # dp_logprobs = jnp.zeros((num_rounds, num_chains))
-    # ep_logprobs = jnp.zeros((num_rounds, num_chains))
-    # # TODO debugging bit ends here
-
+    Args:
+        dp: The DP to plot.
+        eps: The EPs to plot.
+    """
     # Evaluate the solutions proposed by the prediction+mitigation algorithm
     result = eqx.filter_vmap(
         lambda dp, ep: simulate(object_type, ep, dp, static_policy),
         in_axes=(None, 0),
-    )(final_dps, final_eps)
+    )(dp, eps)
 
     # Plot the results
     fig = plt.figure(figsize=(32, 16), constrained_layout=True)
@@ -415,16 +213,6 @@ if __name__ == "__main__":
             ["potential", "potential", "potential", "potential", "potential"],
         ],
     )
-
-    # Plot the chain convergence
-    if predict:
-        axs["trace"].plot(ep_logprobs)
-        axs["trace"].set_ylabel("Log probability after contingency update")
-    else:
-        axs["trace"].plot(dp_logprobs)
-        axs["trace"].set_ylabel("Log probability after repair")
-
-    axs["trace"].set_xlabel("# Samples")
 
     # Plot the exogenous parameters, color-coded by potential
     max_potential = jnp.max(result.potential)
@@ -487,6 +275,252 @@ if __name__ == "__main__":
             color="red",
             s=50,
         )
+
+    # log the figure to wandb
+    wandb.log({"plot": fig}, commit=False)
+
+    # Close the figure
+    plt.close()
+
+
+if __name__ == "__main__":
+    # Set up arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--savename", type=str, default="grasping")
+    parser.add_argument("--object_type", type=str, default="box")
+    parser.add_argument("--seed", type=int, nargs="?", default=0)
+    parser.add_argument("--L", type=float, nargs="?", default=1.0)
+    parser.add_argument("--failure_level", type=float, nargs="?", default=0.003)
+    parser.add_argument("--dp_logprior_scale", type=float, nargs="?", default=1.0)
+    parser.add_argument("--dp_mcmc_step_size", type=float, nargs="?", default=1e-5)
+    parser.add_argument("--ep_mcmc_step_size", type=float, nargs="?", default=1e-5)
+    parser.add_argument("--num_rounds", type=int, nargs="?", default=100)
+    parser.add_argument("--num_steps_per_round", type=int, nargs="?", default=10)
+    parser.add_argument("--num_chains", type=int, nargs="?", default=10)
+    parser.add_argument("--quench_rounds", type=int, nargs="?", default=0)
+    parser.add_argument("--disable_gradients", action="store_true")
+    parser.add_argument("--disable_stochasticity", action="store_true")
+    parser.add_argument("--disable_mh", action="store_true")
+    parser.add_argument("--reinforce", action="store_true")
+    parser.add_argument("--moving_obstacles", action="store_true")
+    parser.add_argument("--num_stress_test_cases", type=int, nargs="?", default=1_000)
+    boolean_action = argparse.BooleanOptionalAction
+    parser.add_argument("--repair", action=boolean_action, default=False)
+    parser.add_argument("--predict", action=boolean_action, default=True)
+    parser.add_argument("--temper", action=boolean_action, default=True)
+    parser.add_argument("--grad_clip", type=float, nargs="?", default=1.0)
+    parser.add_argument("--dont_normalize_gradients", action="store_true")
+    args = parser.parse_args()
+
+    # Hyperparameters
+    L = args.L
+    seed = args.seed
+    object_type = args.object_type
+    failure_level = args.failure_level
+    dp_logprior_scale = args.dp_logprior_scale
+    dp_mcmc_step_size = args.dp_mcmc_step_size
+    ep_mcmc_step_size = args.ep_mcmc_step_size
+    num_rounds = args.num_rounds
+    num_steps_per_round = args.num_steps_per_round
+    num_chains = args.num_chains
+    use_gradients = not args.disable_gradients
+    use_stochasticity = not args.disable_stochasticity
+    use_mh = not args.disable_mh
+    reinforce = args.reinforce
+    repair = args.repair
+    predict = args.predict
+    temper = args.temper
+    quench_rounds = args.quench_rounds
+    grad_clip = args.grad_clip
+    normalize_gradients = not args.dont_normalize_gradients
+    num_stress_test_cases = args.num_stress_test_cases
+
+    quench_dps_only = False
+    if reinforce:
+        alg_type = f"reinforce_l2c_0.05_step_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+    elif use_gradients and use_stochasticity and use_mh:
+        alg_type = f"mala_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+        # quench_dps_only = True
+    elif use_gradients and use_stochasticity and not use_mh:
+        alg_type = f"ula_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+    elif use_gradients and not use_stochasticity:
+        alg_type = f"gd_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}_clip_{grad_clip:.1e}"
+    elif not use_gradients and use_stochasticity and use_mh:
+        alg_type = f"rmh_lr_{ep_mcmc_step_size:.1e}/{dp_mcmc_step_size:.1e}"
+    elif not use_gradients and use_stochasticity and not use_mh:
+        alg_type = "random_walk"
+    else:
+        alg_type = "static"
+
+    # Initialize logger
+    wandb.init(
+        project=(
+            args.savename
+            + ("-predict" if predict else "")
+            + ("-repair" if repair else "")
+            + f"-{num_rounds}x{num_steps_per_round}"
+        ),
+        group=alg_type,
+        config={
+            "L": L,
+            "object_type": object_type,
+            "failure_level": failure_level,
+            "seed": seed,
+            "dp_logprior_scale": dp_logprior_scale,
+            "dp_mcmc_step_size": dp_mcmc_step_size,
+            "ep_mcmc_step_size": ep_mcmc_step_size,
+            "num_rounds": num_rounds,
+            "num_steps_per_round": num_steps_per_round,
+            "num_chains": num_chains,
+            "use_gradients": use_gradients,
+            "use_stochasticity": use_stochasticity,
+            "use_mh": use_mh,
+            "reinforce": reinforce,
+            "repair": repair,
+            "predict": predict,
+            "temper": temper,
+            "quench_rounds": quench_rounds,
+            "grad_clip": grad_clip,
+            "normalize_gradients": normalize_gradients,
+            "num_stress_test_cases": num_stress_test_cases,
+            "quench_dps_only": quench_dps_only,
+        },
+    )
+
+    # Add exponential tempering if using
+    t = jnp.linspace(0, 1, num_rounds) + 0.1
+    tempering_schedule = 1 - jnp.exp(-40 * t) if temper else None
+
+    # Make a PRNG key (#sorandom)
+    prng_key = jrandom.PRNGKey(seed)
+
+    # Load the model (key doesn't matter; we'll replace all leaves with the saved
+    # parameters), duplicating the model for each chain. We'll also split partition
+    # out just the continuous parameters, which will be our design parameters
+    dummy_policy = AffordancePredictor(jrandom.PRNGKey(0))
+    load_policy = lambda _: eqx.tree_deserialise_leaves(args.model_path, dummy_policy)
+    get_dps = lambda _: eqx.partition(load_policy(_), eqx.is_array)[0]
+    initial_dps = eqx.filter_vmap(get_dps)(jnp.arange(num_chains))
+    # Also save out the static part of the policy
+    initial_dp, static_policy = eqx.partition(load_policy(None), eqx.is_array)
+
+    # Make a prior logprob for the policy that penalizes large updates to the policy
+    # parameters
+    def dp_prior_logprob(dp):
+        # Take a mean rather than a sum to make this not crazy large
+        block_logprobs = jtu.tree_map(
+            lambda x_updated, x: jax.scipy.stats.norm.logpdf(
+                x_updated - x, scale=dp_logprior_scale
+            ).mean(),
+            dp,
+            initial_dp,
+        )
+        # Take a block mean rather than the sum of all blocks to avoid a crazy large
+        # logprob
+        overall_logprob = jax.flatten_util.ravel_pytree(block_logprobs)[0].mean()
+        return overall_logprob
+
+    # Initialize some initial states (these serve as our initial exogenous parameters)
+    prng_key, ep_keys = jrandom.split(prng_key)
+    ep_keys = jrandom.split(ep_keys, num_chains)
+    initial_eps = jax.vmap(sample_ep)(ep_keys)
+
+    # Initialize some initial states for stress testing
+    prng_key, stress_testing_keys = jrandom.split(prng_key)
+    stress_testing_keys = jrandom.split(stress_testing_keys, num_stress_test_cases)
+    stress_test_eps = jax.vmap(sample_ep)(stress_testing_keys)
+
+    # Choose which sampler to use
+    if reinforce:
+        init_sampler_fn = init_reinforce_sampler
+        make_kernel_fn = lambda _1, logprob_fn, step_size, _2: make_reinforce_kernel(
+            logprob_fn,
+            step_size,
+            perturbation_stddev=0.05,
+            baseline_update_rate=0.5,
+        )
+    else:
+        # This sampler yields either MALA, GD, or RMH depending on whether gradients
+        # and/or stochasticity are enabled
+        init_sampler_fn = lambda params, logprob_fn: init_mcmc_sampler(
+            params,
+            logprob_fn,
+            normalize_gradients,
+            grad_clip,
+        )
+        make_kernel_fn = (
+            lambda _, logprob_fn, step_size, stochasticity: make_mcmc_kernel(
+                logprob_fn,
+                step_size,
+                use_gradients,
+                stochasticity,
+                grad_clip,
+                normalize_gradients,
+                use_mh,
+            )
+        )
+
+    # Run the prediction+mitigation process
+    t_start = time.perf_counter()
+    dps, eps, dp_logprobs, ep_logprobs = predict_and_mitigate_failure_modes(
+        prng_key,
+        initial_dps,
+        initial_eps,
+        dp_logprior_fn=dp_prior_logprob,
+        ep_logprior_fn=ep_logprior,
+        ep_potential_fn=lambda dp, ep: -L
+        * jax.nn.elu(
+            failure_level - simulate(object_type, ep, dp, static_policy).potential
+        ),
+        dp_potential_fn=lambda dp, ep: -L
+        * jax.nn.elu(
+            simulate(object_type, ep, dp, static_policy).potential - failure_level
+        ),
+        init_sampler=init_sampler_fn,
+        make_kernel=make_kernel_fn,
+        num_rounds=num_rounds,
+        num_mcmc_steps_per_round=num_steps_per_round,
+        dp_mcmc_step_size=dp_mcmc_step_size,
+        ep_mcmc_step_size=ep_mcmc_step_size,
+        use_stochasticity=use_stochasticity,
+        repair=repair,
+        predict=predict,
+        quench_rounds=quench_rounds,
+        tempering_schedule=tempering_schedule,
+        logging_prefix=f"{args.savename}/{alg_type}[{os.getpid()}]",
+        stress_test_cases=stress_test_eps,
+        potential_fn=lambda dp, ep: simulate(
+            object_type, ep, dp, static_policy
+        ).potential,
+        failure_level=failure_level,
+        plotting_cb=plotting_cb,
+    )
+    t_end = time.perf_counter()
+    print(
+        f"Ran {num_rounds:,} rounds with {num_chains} chains in {t_end - t_start:.2f} s"
+    )
+
+    # Select the policy that performs best against all predicted failures before
+    # the final round (choose from all chains)
+    if repair:
+        most_likely_dps_idx = jnp.argmax(dp_logprobs[-1], axis=-1)
+        final_dps = jtu.tree_map(lambda leaf: leaf[-1, most_likely_dps_idx], dps)
+    else:
+        # Just pick one policy arbitrarily if we didn't optimize the policies.
+        final_dps = jtu.tree_map(lambda leaf: leaf[-1, 0], dps)
+
+    # Evaluate this single policy against all failures
+    final_eps = jtu.tree_map(lambda leaf: leaf[-1], eps)
+
+    # # TODO for debugging plots, just use the initial policy and eps
+    # t_end = 0.0
+    # t_start = 0.0
+    # final_dps = jtu.tree_map(lambda leaf: leaf[-1], initial_dps)
+    # final_eps = initial_eps
+    # dp_logprobs = jnp.zeros((num_rounds, num_chains))
+    # ep_logprobs = jnp.zeros((num_rounds, num_chains))
+    # # TODO debugging bit ends here
 
     save_dir = (
         f"results/{args.savename}_{object_type}/{'predict' if predict else ''}"
